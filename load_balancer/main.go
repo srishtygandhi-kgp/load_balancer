@@ -84,6 +84,18 @@ func addReplicas(chMap []Entry, serverID int) {
 	}
 }
 
+func spawnNewServerContainer(containerName string, port int) error {
+	sid := port - 5000
+	cmd := exec.Command("docker", "run", "-d", "--name", containerName, "-p", fmt.Sprintf("%d:5000", port), "--network", "assign1_net1", "--network-alias", containerName, "-e", fmt.Sprintf("SERVER_ID=%d", sid), "server_image")
+
+	err := cmd.Run()
+	if err != nil {
+		return fmt.Errorf("error spawning new server container: %v", err)
+	}
+
+	return nil
+}
+
 // RemoveServer removes a server from the consistent hash map
 func RemoveServer(chMap []Entry, serverID int) {
 	for i := 0; i < M; i++ {
