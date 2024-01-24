@@ -110,6 +110,7 @@ Here are the images corresponding to the mentioned server configurations:
   - ![4-servers](images/A4/4.png )
   - ![5-servers](images/A4/5.png )
   - ![6-servers](images/A4/6.png )
+  - ![Average load](images/avg_load.png)
 
 
 
