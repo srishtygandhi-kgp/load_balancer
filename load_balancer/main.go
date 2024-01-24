@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/go-co-op/gocron"
 	"io"
 	"log"
 	"math/rand"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
 
 func contains(servers []string, hostname string) bool {
@@ -459,8 +461,52 @@ func main() {
 	//http.HandleFunc("/heartbeat", loadBalancer.routeHandler)
 	http.HandleFunc("/", loadBalancer.wrongPathHandler)
 
+	//check heartbeat and respwan if needed
+	s := gocron.NewScheduler(time.UTC)
+	_, err := s.Every(5).Seconds().Do(checkHeartbeat, loadBalancer)
+	if err != nil {
+		return
+	}
+	s.StartAsync()
+
 	// Start HTTP server
 	port := 5000
 	log.Printf("Load balancer listening on port %d...\n", port)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), nil))
+}
+
+func checkHeartbeat(lb *LoadBalancer) {
+	for i := range lb.servers {
+		serverID := i + 1
+		if !lb.serverIDexists(serverID) {
+			continue
+		}
+		url := fmt.Sprintf("http://server%v:5000/heartbeat", serverID)
+		response, err := http.Get(url)
+
+		if err != nil || response.StatusCode != 200 {
+			startTime := time.Now()
+			fmt.Printf("Server %v is down\n", serverID)
+			cmd := exec.Command("docker", "stop", "-f", fmt.Sprintf("Server%d", serverID))
+			err := cmd.Run()
+			if err != nil {
+				break
+			}
+			cmd = exec.Command("docker", "rm", "-f", fmt.Sprintf("Server%d", serverID))
+			err = cmd.Run()
+			if err != nil {
+				break
+			}
+			RemoveServer(lb.hashMap, serverID)
+			//spawn new server
+			err = AddServer(len(lb.servers) + 1)
+			if err != nil {
+				break
+			}
+			lb.servers = append(lb.servers, lb.servers[i])
+			addReplicas(lb.hashMap, len(lb.servers))
+			endTime := time.Now()
+			fmt.Printf("Server %v is respawned in %v ms\n", serverID, endTime.Sub(startTime).Milliseconds())
+		}
+	}
 }
