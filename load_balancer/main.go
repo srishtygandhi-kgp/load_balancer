@@ -144,3 +144,93 @@ func GetNextNearestServer(chMap []Entry, slot int) int {
 	}
 	return -1 // No server found (should not happen in a valid configuration)
 }
+
+// GetServer finds the nearest server for a given request ID
+func GetServer(chMap []Entry, requestID int) int {
+	slot := requestHash(requestID) % M
+
+	// Apply linear probing to find the slot of the request
+	for i := 0; i < M; i++ {
+		currentSlot := (slot + i) % M
+		if !chMap[currentSlot].IsEmpty {
+			// Find the next nearest server based on the found slot
+			nextNearestServer := GetNextNearestServer(chMap, currentSlot)
+			return chMap[nextNearestServer].ServerID
+		}
+	}
+
+	return -1 // No server found (should not happen in a valid configuration)
+}
+
+// PrintMap prints the consistent hash map
+func PrintMap(chMap []Entry) {
+	fmt.Println("Consistent Hash Map:")
+	for i, entry := range chMap {
+		if entry.IsEmpty {
+			fmt.Printf("Slot %d: Empty\n", i)
+		} else if entry.IsServer {
+			fmt.Printf("Slot %d: Server %d, Replica %d\n", i, entry.ServerID, entry.ReplicaID)
+		} else {
+			fmt.Printf("Slot %d: Request %d, Next Nearest Replica %d\n", i, entry.ServerID, entry.ReplicaID)
+		}
+	}
+}
+
+// LoadBalancer represents the load balancer
+type LoadBalancer struct {
+	servers []string   // Names of web server containers
+	hashMap []Entry    // Consistent hash map
+	mu      sync.Mutex // Mutex for concurrent access
+}
+
+// NewLoadBalancer creates a new LoadBalancer instance
+func NewLoadBalancer() *LoadBalancer {
+	return &LoadBalancer{
+		servers: make([]string, 0),
+		hashMap: make([]Entry, M),
+	}
+}
+
+var (
+	portCounter = 5001
+	serverPorts = make(map[int]int)
+)
+
+// Function to get the next available port for a new server container
+func getNextPort(serverID int) int {
+	if port, exists := serverPorts[serverID]; exists {
+		return port
+	}
+
+	// Allocate a new port and store the mapping
+	port := portCounter
+	portCounter++
+	serverPorts[serverID] = port
+	return port
+}
+
+// Endpoints
+
+func (lb *LoadBalancer) getActiveServers() []string {
+	var activeServers []string
+	for i, serverName := range lb.servers {
+		if lb.serverIDexists(i + 1) {
+			activeServers = append(activeServers, serverName)
+		}
+	}
+	return activeServers
+}
+
+func (lb *LoadBalancer) wrongPathHandler(w http.ResponseWriter, r *http.Request) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	response := map[string]interface{}{
+		"message": "<Error> '/other' endpoint does not exist in server replicas",
+		"status":  "failure",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	json.NewEncoder(w).Encode(response)
+}
