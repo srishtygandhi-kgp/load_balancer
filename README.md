@@ -54,10 +54,8 @@ Contributors for this project are:
   ### A3. Case of server failure
 
   ### A4. Modifying the hash functions
-   - ![2-servers](images/A4/2.png)
-   - ![3-servers](images/A4/3.png)
-   - ![4-servers](images/A4/4.png)
-   - ![5-servers](images/A4/5.png)
-   - ![6-servers](images/A4/6.png)  
+ ![2-servers](images/A4/2.png)   ![3-servers](images/A4/3.png)   ![4-servers](images/A4/4.png)   ![5-servers](images/A4/5.png)   ![6-servers](images/A4/6.png)
+
+
 
 
