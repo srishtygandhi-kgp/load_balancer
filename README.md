@@ -44,4 +44,13 @@ Contributors for this project are:
   docker-compose down
   ```
 
+  ## Analysis
+  ### A1. 10000 async requests on N = 3
+  
+  ### A2. N from 2 to 6 and launch 10000 requests on each such increment
+  
+  ### A3. Case of server failure
+
+  ### A4. Modifying the hash functions
+
 
