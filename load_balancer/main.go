@@ -494,15 +494,15 @@ func checkHeartbeat(lb *LoadBalancer) {
 			}
 			cmd = exec.Command("docker", "rm", "-f", fmt.Sprintf("Server%d", serverID))
 			err = cmd.Run()
-			if err != nil {
-				break
-			}
+			//if err != nil {
+			//	break
+			//}
 			RemoveServer(lb.hashMap, serverID)
 			//spawn new server
 			err = AddServer(len(lb.servers) + 1)
-			if err != nil {
-				break
-			}
+			//if err != nil {
+			//	break
+			//}
 			lb.servers = append(lb.servers, lb.servers[i])
 			addReplicas(lb.hashMap, len(lb.servers))
 			endTime := time.Now()
