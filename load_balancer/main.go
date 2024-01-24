@@ -61,7 +61,7 @@ func AddServer(serverID int) error {
 		log.Printf("Error spawning new server container for Server%d: %v", serverID, err)
 		return err
 	}
-	fmt.Printf("\nServer%d spawned successfully. ", serverID)
+	fmt.Printf("\nServer%d spawned successfully. \n", serverID)
 	return nil
 }
 
@@ -73,8 +73,9 @@ func addReplicas(chMap []Entry, serverID int) {
 			chMap[slot] = Entry{IsEmpty: false, IsServer: true, ServerID: serverID, ReplicaID: i}
 		} else {
 			// Apply linear probing in case of collision
+
 			for j := 1; j < M; j++ {
-				newSlot := (slot + j) % M
+				newSlot := (slot + 11*j) % M
 				if chMap[newSlot].IsEmpty {
 					chMap[newSlot] = Entry{IsEmpty: false, IsServer: true, ServerID: serverID, ReplicaID: i}
 					break
@@ -201,4 +202,311 @@ func getNextPort(serverID int) int {
 	portCounter++
 	serverPorts[serverID] = port
 	return port
+}
+
+// Endpoints
+
+func (lb *LoadBalancer) getActiveServers() []string {
+	var activeServers []string
+	for i, serverName := range lb.servers {
+		if lb.serverIDexists(i + 1) {
+			activeServers = append(activeServers, serverName)
+		}
+	}
+	return activeServers
+}
+
+func (lb *LoadBalancer) wrongPathHandler(w http.ResponseWriter, r *http.Request) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	response := map[string]interface{}{
+		"message": "<Error> '/other' endpoint does not exist in server replicas",
+		"status":  "failure",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	json.NewEncoder(w).Encode(response)
+}
+
+func (lb *LoadBalancer) replicasHandler(w http.ResponseWriter, r *http.Request) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	replicas := lb.getActiveServers()
+	response := map[string]interface{}{
+		"message": map[string]interface{}{
+			"N":        len(replicas),
+			"replicas": replicas,
+		},
+		"status": "successful",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
+func (lb *LoadBalancer) addHandler(w http.ResponseWriter, r *http.Request) {
+	// Parse JSON payload
+	var payload struct {
+		N         int      `json:"n"`
+		Hostnames []string `json:"hostnames"`
+	}
+
+	err := json.NewDecoder(r.Body).Decode(&payload)
+	if err != nil {
+		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
+		return
+	}
+
+	// Validate payload
+	if len(payload.Hostnames) != payload.N {
+		response := map[string]interface{}{
+			"message": fmt.Sprintf("<Error> Length of hostname list is not equal to the specified count (%d)", payload.N),
+			"status":  "failure",
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+
+	// Add new server instances
+	// lb.mu.Lock()
+	// defer lb.mu.Unlock()
+
+	for _, hostname := range payload.Hostnames {
+		err := AddServer(len(lb.servers) + 1)
+		if err != nil {
+			return
+		}
+		lb.servers = append(lb.servers, hostname)
+		addReplicas(lb.hashMap, len(lb.servers))
+	}
+
+	// Respond with the updated replicas
+	replicas := lb.getActiveServers()
+	response := map[string]interface{}{
+		"message": map[string]interface{}{
+			"N":        len(replicas),
+			"replicas": replicas,
+		},
+		"status": "successful",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
+func (lb *LoadBalancer) serverIDexists(serverID int) bool {
+	for _, server := range lb.hashMap {
+		if server.ServerID == serverID && !server.IsEmpty {
+			return true
+		}
+	}
+	return false
+}
+
+func (lb *LoadBalancer) removeHandler(w http.ResponseWriter, r *http.Request) {
+	// Parse JSON payload
+	var payload struct {
+		N         int      `json:"n"`
+		Hostnames []string `json:"hostnames"`
+	}
+
+	err := json.NewDecoder(r.Body).Decode(&payload)
+	if err != nil {
+		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
+		return
+	}
+
+	// Validate payload
+	if len(payload.Hostnames) > payload.N {
+		response := map[string]interface{}{
+			"message": fmt.Sprintf("<Error> Length of hostname list is more than removable instances"),
+			"status":  "failure",
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+
+	// Remove server instances
+	// lb.mu.Lock()
+	// defer lb.mu.Unlock()
+	removed := 0
+	for i, hostname := range lb.servers {
+		if removed == payload.N {
+			break
+		}
+		// check if hostname is in lb.servers
+		if contains(payload.Hostnames, hostname) && lb.serverIDexists(i+1) {
+			// remove hostname from lb.servers
+			cmd := exec.Command("docker", "stop", "-f", fmt.Sprintf("Server%d", i+1))
+			cmd.Run()
+			cmd = exec.Command("docker", "rm", "-f", fmt.Sprintf("Server%d", i+1))
+			cmd.Run()
+			// lb.servers = removeElement(lb.servers, hostname)
+			RemoveServer(lb.hashMap, i+1)
+			removed++
+		}
+		// lb.servers = removeElement(lb.servers, hostname)
+	}
+
+	for i := range lb.servers {
+		if removed == payload.N {
+			break
+		}
+		if lb.serverIDexists(i + 1) {
+			cmd := exec.Command("docker", "stop", "-f", fmt.Sprintf("Server%d", i+1))
+			cmd.Run()
+			cmd = exec.Command("docker", "rm", "-f", fmt.Sprintf("Server%d", i+1))
+			cmd.Run()
+			// lb.servers = lb.servers[:len(lb.servers)-1]
+			RemoveServer(lb.hashMap, i+1)
+			removed++
+		}
+	}
+
+	// Respond with the updated replicas
+	replicas := lb.getActiveServers()
+	response := map[string]interface{}{
+		"message": map[string]interface{}{
+			"N":        len(replicas),
+			"replicas": replicas,
+		},
+		"status": "successful",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
+func (lb *LoadBalancer) routeHandler(w http.ResponseWriter, r *http.Request) {
+	// Generate a random 6-digit integer as the request ID
+	requestID := generateRequestID()
+	// get the path of the request
+	path := r.URL.Path
+	path = path[strings.LastIndex(path, "/")+1:]
+
+	// Use consistent hashing to find the next nearest server
+	serverIndex := AddRequest(lb.hashMap, requestID)
+	// Check if there are available servers
+	if serverIndex > 0 && serverIndex <= len(lb.servers) {
+		fmt.Printf("\nServer%d is chosen. ", serverIndex)
+		url := fmt.Sprintf("http://server%v:5000/%v", serverIndex, path)
+		response, err := http.Get(url)
+		if err != nil {
+			fmt.Printf("Error sending HTTP request: %v\n", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		defer response.Body.Close()
+
+		// Copy the received HTTP response headers to the client's response writer
+		for key, values := range response.Header {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+
+		// Set the HTTP status code for the client's response
+		w.WriteHeader(response.StatusCode)
+
+		// Copy the received HTTP response body to the client's response writer
+		_, err = io.Copy(w, response.Body)
+		if err != nil {
+			fmt.Printf("Error copying response body: %v\n", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+	} else {
+		// Handle the case when no servers are available
+		response := map[string]interface{}{
+			"message": fmt.Sprintf("<Error> No servers available for routing"),
+			"status":  "failure",
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(response)
+	}
+}
+
+// generateRequestID generates a random 6-digit integer as the request ID
+func generateRequestID() int {
+	return rand.Intn(900000) + 100000 // Generate a random 6-digit ID
+}
+
+func main() {
+	loadBalancer := NewLoadBalancer()
+
+	for i := 0; i < M; i++ {
+		loadBalancer.hashMap[i] = Entry{IsEmpty: true}
+	}
+
+	// Define HTTP endpoints
+	http.HandleFunc("/rep", loadBalancer.replicasHandler)
+	http.HandleFunc("/add", loadBalancer.addHandler)
+	http.HandleFunc("/rm", loadBalancer.removeHandler)
+	http.HandleFunc("/home", loadBalancer.routeHandler)
+	//http.HandleFunc("/heartbeat", loadBalancer.routeHandler)
+	http.HandleFunc("/", loadBalancer.wrongPathHandler)
+
+	//check heartbeat and respwan if needed
+	s := gocron.NewScheduler(time.UTC)
+	_, err := s.Every(5).Seconds().SingletonMode().Do(checkHeartbeat, loadBalancer)
+	if err != nil {
+		return
+	}
+	s.StartAsync()
+
+	// Start HTTP server
+	port := 5000
+	log.Printf("Load balancer listening on port %d...\n", port)
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), nil))
+}
+
+func checkHeartbeat(lb *LoadBalancer) {
+	for i := range lb.servers {
+		serverID := i + 1
+		if !lb.serverIDexists(serverID) {
+			continue
+		}
+		url := fmt.Sprintf("http://server%v:5000/heartbeat", serverID)
+		response, err := http.Get(url)
+
+		if err != nil || response.StatusCode != 200 {
+			startTime := time.Now()
+			fmt.Printf("Server %v is down\n", serverID)
+			cmd := exec.Command("docker", "stop", "-f", fmt.Sprintf("Server%d", serverID))
+			err := cmd.Run()
+			// if err != nil {
+			// 	break
+			// }
+			cmd = exec.Command("docker", "rm", "-f", fmt.Sprintf("Server%d", serverID))
+			err = cmd.Run()
+			// if err != nil {
+			// 	break
+			// }
+			RemoveServer(lb.hashMap, serverID)
+			//spawn new server
+			err = AddServer(len(lb.servers) + 1)
+			if err != nil {
+				break
+			}
+			lb.servers = append(lb.servers, lb.servers[i])
+			addReplicas(lb.hashMap, len(lb.servers))
+			endTime := time.Now()
+			fmt.Printf("Server %v is respawned in %v ms\n", serverID, endTime.Sub(startTime).Milliseconds())
+		}
+	}
 }
