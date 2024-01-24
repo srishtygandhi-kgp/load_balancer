@@ -1,5 +1,14 @@
 import requests
 import concurrent.futures
+import os
+import matplotlib.pyplot as plt
+import json
+import sys
+
+def cmd(n):
+    hostnames = ["S" + str(i+1) for i in range(n)]
+    curl_command = 'curl -X POST -H "Content-Type: application/json" -d \'{{"n": {}, "hostnames": {}}}\' http://localhost:5000/add'.format(n, json.dumps(hostnames))
+    return curl_command
 
 def send_request(url):
     try:
@@ -25,6 +34,22 @@ def main():
         else:
             data[server] = 1
             # file.write(response + "\n")
+    
+    # Extract keys and values from the dictionary
+    labels = list(data.keys())
+    values = list(data.values())
+
+    # Create a bar plot
+    plt.bar(labels, values, color='blue', alpha=0.7)
+
+    # Add labels and title
+    plt.xlabel('Servers')
+    plt.ylabel('Frequency')
+    plt.title('Requests per Server')
+
+    # Show the plot
+    plt.show()
 
 if __name__ == "__main__":
+    os.system(cmd(int(sys.argv[1])))
     main()
