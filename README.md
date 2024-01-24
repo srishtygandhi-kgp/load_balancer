@@ -11,14 +11,20 @@ Contributors for this project are:
 ---
 
 ## Usage
-###Running the load balancer
+### Running the load balancer
 
-To build the Docker containers, run:
-
+- To build the Docker containers, run:
 ```bash
 docker-compose build
 ```
-To start the Docker containers, use:
-
+- To start the Docker containers, use:
 ```bash
 docker-compose up
+```
+- cleanup
+```bash
+docker ps -a | grep './server' | awk '{print $1}' | xargs docker rm --force
+docker-compose down
+```
+
+
