@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/go-co-op/gocron"
-	"log"
-	"net/http"
 	"io"
+	"log"
 	"math/rand"
+	"net/http"
 	"os/exec"
 	"strings"
 	"sync"
@@ -452,6 +452,14 @@ func main() {
 	for i := 0; i < M; i++ {
 		loadBalancer.hashMap[i] = Entry{IsEmpty: true}
 	}
+
+	// Define HTTP endpoints
+	http.HandleFunc("/rep", loadBalancer.replicasHandler)
+	http.HandleFunc("/add", loadBalancer.addHandler)
+	http.HandleFunc("/rm", loadBalancer.removeHandler)
+	http.HandleFunc("/home", loadBalancer.routeHandler)
+	//http.HandleFunc("/heartbeat", loadBalancer.routeHandler)
+	http.HandleFunc("/", loadBalancer.wrongPathHandler)
 
 	//check heartbeat and respwan if needed
 	s := gocron.NewScheduler(time.UTC)
