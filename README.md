@@ -14,17 +14,17 @@ Contributors for this project are:
 ### Running the load balancer
 
 - To build the Docker containers:
-```bash
-docker-compose build
-```
+  ```bash
+  docker-compose build
+  ```
 - To start the Docker containers:
-```bash
-docker-compose up
-```
+  ```bash
+  docker-compose up
+  ```
 - Adding new servers to the container:
-```bash
-curl -X POST -H "Content-Type: application/json" -d '{"n": 3, "hostnames": ["S1", "S2", "S3"]}' http://localhost:5000/add
-```
+  ```bash
+  curl -X POST -H "Content-Type: application/json" -d '{"n": 3, "hostnames": ["S1", "S2", "S3"]}' http://localhost:5000/add
+  ```
 - To get the status of replicas
   ```bash
   curl http://localhost:5000/rep
@@ -39,9 +39,9 @@ curl -X POST -H "Content-Type: application/json" -d '{"n": 3, "hostnames": ["S1"
   ```
 
 - Cleanup:
-```bash
-docker ps -a | grep './server' | awk '{print $1}' | xargs docker rm --force
-docker-compose down
-```
+  ```bash
+  docker ps -a | grep './server' | awk '{print $1}' | xargs docker rm --force
+  docker-compose down
+  ```
 
 
