@@ -308,7 +308,7 @@ func (lb *LoadBalancer) serverIDexists(serverID int) bool {
 			return !server.IsEmpty
 		}
 	}
-	return true
+	return false
 }
 
 func (lb *LoadBalancer) removeHandler(w http.ResponseWriter, r *http.Request) {
@@ -463,7 +463,7 @@ func main() {
 
 	//check heartbeat and respwan if needed
 	s := gocron.NewScheduler(time.UTC)
-	_, err := s.Every(5).Seconds().Do(checkHeartbeat, loadBalancer)
+	_, err := s.Every(5).Seconds().SingletonMode().Do(checkHeartbeat, loadBalancer)
 	if err != nil {
 		return
 	}
@@ -489,20 +489,20 @@ func checkHeartbeat(lb *LoadBalancer) {
 			fmt.Printf("Server %v is down\n", serverID)
 			cmd := exec.Command("docker", "stop", "-f", fmt.Sprintf("Server%d", serverID))
 			err := cmd.Run()
-			if err != nil {
-				break
-			}
+			// if err != nil {
+			// 	break
+			// }
 			cmd = exec.Command("docker", "rm", "-f", fmt.Sprintf("Server%d", serverID))
 			err = cmd.Run()
-			//if err != nil {
-			//	break
-			//}
+			// if err != nil {
+			// 	break
+			// }
 			RemoveServer(lb.hashMap, serverID)
 			//spawn new server
 			err = AddServer(len(lb.servers) + 1)
-			//if err != nil {
-			//	break
-			//}
+			if err != nil {
+				break
+			}
 			lb.servers = append(lb.servers, lb.servers[i])
 			addReplicas(lb.hashMap, len(lb.servers))
 			endTime := time.Now()
