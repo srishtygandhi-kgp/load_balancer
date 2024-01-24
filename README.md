@@ -55,11 +55,11 @@ Many hashing schemes rely on not needing any state for routing requests, hence t
   
   ### A2. N from 2 to 6 and launch 10000 requests on each such increment
   
-  - ![2-servers](images/A4/2.png )
-  - ![3-servers](images/A4/3.png )
-  - ![4-servers](images/A4/4.png )
-  - ![5-servers](images/A4/5.png )
-  - ![6-servers](images/A4/6.png )
+  - ![2-servers](images/2.png )
+  - ![3-servers](images/3.png )
+  - ![4-servers](images/4.png )
+  - ![5-servers](images/5.png )
+  - ![6-servers](images/6.png )
 
 We increased the number of server containers (N) from 2 to 6, launching 10,000 requests at each increment. The accompanying line chart illustrates average server loads at each run. Similar to A1, the non-uniform mapping persists, emphasizing the hash function's impact on request distribution. Despite minor variations, the system displays limitations in scalability and even load balancing as the number of server containers increases.
 
