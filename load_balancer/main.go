@@ -305,7 +305,7 @@ func (lb *LoadBalancer) addHandler(w http.ResponseWriter, r *http.Request) {
 func (lb *LoadBalancer) serverIDexists(serverID int) bool {
 	for _, server := range lb.hashMap {
 		if server.ServerID == serverID {
-			return false
+			return !server.IsEmpty
 		}
 	}
 	return true
