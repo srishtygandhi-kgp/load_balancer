@@ -13,15 +13,32 @@ Contributors for this project are:
 ## Usage
 ### Running the load balancer
 
-- To build the Docker containers, run:
+- To build the Docker containers:
 ```bash
 docker-compose build
 ```
-- To start the Docker containers, use:
+- To start the Docker containers:
 ```bash
 docker-compose up
 ```
-- cleanup
+- Adding new servers to the container:
+```bash
+curl -X POST -H "Content-Type: application/json" -d '{"n": 3, "hostnames": ["S1", "S2", "S3"]}' http://localhost:5000/add
+```
+- To get the status of replicas
+  ```bash
+  curl http://localhost:5000/rep
+  ```
+- To remove the servers:
+  ```bash
+  curl -X DELETE -H "Content-Type: application/json" -d '{"n": 2, "hostnames": ["S1", "S2"]}' http://localhost:5000/rm
+  ```
+- To route to a server
+  ```bash
+  curl http://localhost:5000/home
+  ```
+
+- Cleanup:
 ```bash
 docker ps -a | grep './server' | awk '{print $1}' | xargs docker rm --force
 docker-compose down
