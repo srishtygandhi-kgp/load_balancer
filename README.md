@@ -7,5 +7,18 @@ Contributors for this project are:
 - [Srishty Gandhi](https://github.com/srishtygandhi-kgp) - 20CS30052
 - [Atulya Sharma](https://github.com/r-avenous) - 20CS10012
 - [Krishna Venkat Cherukuri](https://github.com/kv2002) - 20CS10019
+  
+---
 
 ## Usage
+###Running the load balancer
+
+To build the Docker containers, run:
+
+```bash
+docker-compose build
+```
+To start the Docker containers, use:
+
+```bash
+docker-compose up
