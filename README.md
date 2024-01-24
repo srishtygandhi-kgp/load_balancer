@@ -47,7 +47,7 @@ Contributors for this project are:
   ## Analysis
   ### A1. 10000 async requests on N = 3
 
-  [3-servers](images/3.png)
+  ![3-servers](images/3.png)
   
   ### A2. N from 2 to 6 and launch 10000 requests on each such increment
   
