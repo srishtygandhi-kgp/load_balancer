@@ -453,14 +453,6 @@ func main() {
 		loadBalancer.hashMap[i] = Entry{IsEmpty: true}
 	}
 
-	// Define HTTP endpoints
-	http.HandleFunc("/rep", loadBalancer.replicasHandler)
-	http.HandleFunc("/add", loadBalancer.addHandler)
-	http.HandleFunc("/rm", loadBalancer.removeHandler)
-	http.HandleFunc("/home", loadBalancer.routeHandler)
-	//http.HandleFunc("/heartbeat", loadBalancer.routeHandler)
-	http.HandleFunc("/", loadBalancer.wrongPathHandler)
-
 	//check heartbeat and respwan if needed
 	s := gocron.NewScheduler(time.UTC)
 	_, err := s.Every(5).Seconds().SingletonMode().Do(checkHeartbeat, loadBalancer)
