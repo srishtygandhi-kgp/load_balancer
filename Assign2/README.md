@@ -61,8 +61,8 @@ Scripts: Shell, Python <br>
 - 10000 reads take time =  42.554858
 - 234.9 reads/sec
 ## Overall Comparison
-![img](./Images/Screenshot from 2024-03-22 01-23-04.png)
-![img](./Images/Screenshot from 2024-03-22 01-23-10.png)
+![img](./Images/wr.png)
+![img](./Images/re.png)
 
 ## A4
 
