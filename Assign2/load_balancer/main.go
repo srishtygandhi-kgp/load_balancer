@@ -369,10 +369,136 @@ func statusHandler(c *gin.Context) {
 
 }
 
+type configPayload struct {
+	Schema schema   `json:"schema" binding:"required"`
+	Shards []string `json:"shards" binding:"required"`
+}
+
 func initHandler(c *gin.Context) {
 
 }
 
 func checkHeartbeat() {
+	failure_server_shard_mapping := make(map[string]map[string]bool)
+	for server := range g_server_shards_mapping {
+		get, err := http.Get(fmt.Sprintf("http://%s:5000/heartbeat", server))
+		if err != nil || get.StatusCode != http.StatusOK {
+			//print current time with the log
+			log.Default().Printf("%v %s is down\n", time.Now(), server)
+			failure_server_shard_mapping[server] = g_server_shards_mapping[server]
+			delete(g_server_shards_mapping, server)
+			for shard := range failure_server_shard_mapping[server] {
+				delete(g_shard_servers_mapping[shard], server)
+			}
+		}
+	}
+	for server := range failure_server_shard_mapping {
+		err := removeContainer(server)
+		if err != nil {
+			log.Default().Printf("Error removing server container for %s: %v", server, err)
+			continue
+		}
+		err = spawnContainer(server)
+		if err != nil {
+			log.Default().Printf("Error spawning new server container for %s: %v", server, err)
+			continue
+		}
+		var shards []string
+		for sh := range failure_server_shard_mapping[server] {
+			shards = append(shards, sh)
+		}
+		var body configPayload
+		body.Schema = g_schema
+		body.Shards = shards
+		jsonBody, err := json.Marshal(body)
+		configEndpoint := fmt.Sprintf("http://%s:5000/config", server)
+		post, err := http.Post(configEndpoint, "application/json", bytes.NewReader(jsonBody))
+		for {
+			if err == nil {
+				break
+			}
+			post, err = http.Post(configEndpoint, "application/json", bytes.NewReader(jsonBody))
+		}
+		if post.StatusCode != http.StatusOK {
+			log.Default().Printf("Error configuring server %s: %v", server, err)
+			continue
+		}
+		g_server_shards_mapping[server] = make(map[string]bool)
+		for sh := range failure_server_shard_mapping[server] {
+			if len(g_shard_servers_mapping[sh]) != 0 {
+				log.Default().Printf("Copying data for %s, downed server = %s", sh, server)
+				var backupServer string
+				for k := range g_shard_servers_mapping[sh] {
+					backupServer = k
+					break
+				}
+				var copyPayload struct {
+					Shards []string `json:"shards" binding:"required"`
+				}
+				copyPayload.Shards = append(copyPayload.Shards, sh)
+				jsonBody, _ := json.Marshal(copyPayload)
+				copyReq, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s:5000/copy", backupServer), bytes.NewReader(jsonBody))
+				if err != nil {
+					log.Default().Printf("Error creating copy request for %s: %v", server, err)
+					continue
+				}
+				client := http.Client{}
+				do, err := client.Do(copyReq)
+				if err != nil {
+					log.Default().Printf("Error copying data to %s: %v", server, err)
+					continue
+				}
+				if do.StatusCode != http.StatusOK {
+					log.Default().Printf("Error copying data to %s: %v", server, "Status not OK")
+					continue
+				}
+				all, err := ioutil.ReadAll(do.Body)
+				if err != nil {
+					log.Default().Printf("Error reading response body: %v", err)
+					continue
+				}
+				var result map[string]interface{}
+				err = json.Unmarshal(all, &result)
+				if err != nil {
+					log.Default().Printf("Error decoding JSON: %v", err)
+					continue
+				}
+				if len(result[sh].([]interface{})) != 0 {
 
+					writeEndpoint := fmt.Sprintf("http://%s:5000/write", server)
+					var body struct {
+						Shard    string
+						Curr_idx int
+						Data     []student
+					}
+					body.Shard = sh
+					//convert result[sh] from []interface to []student type
+					var data []student
+					for _, v := range result[sh].([]interface{}) {
+						data = append(data, student{
+							Stud_id:    int(v.(map[string]interface{})["Stud_id"].(float64)),
+							Stud_name:  v.(map[string]interface{})["Stud_name"].(string),
+							Stud_marks: int(v.(map[string]interface{})["Stud_marks"].(float64)),
+						})
+					}
+					body.Data = data
+					body.Curr_idx = 0
+					jsonBody, _ = json.Marshal(body)
+					res, err := http.Post(writeEndpoint, "application/json", bytes.NewReader(jsonBody))
+					if err != nil {
+						log.Default().Printf("Error writing data to %s: %v", server, err)
+						continue
+					}
+					if res.StatusCode != http.StatusOK {
+						log.Default().Printf("Error writing data to %s: %v", server, "Status not OK")
+						continue
+					}
+
+				}
+			}
+			g_server_shards_mapping[server][sh] = true
+			g_shard_servers_mapping[sh][server] = true
+			log.Default().Printf("shard %s Data copied to %s", sh, server)
+		}
+	}
 }
