@@ -71,3 +71,4 @@ Time taken (Average) for respawning of a server on different configurations
 - 4 Shards | 6 Servers | 3 Replicas : 6.4 Sec
 - 4 Shards | 6 Servers | 6 Replicas : 6.3 Sec
 - 6 Shards | 10 Servers | 8 Replicas : 6.6 Sec
+Operations work fine even after crashing containers
