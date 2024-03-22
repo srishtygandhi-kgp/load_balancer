@@ -1,17 +1,12 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/go-co-op/gocron"
-	"io"
 	"io/ioutil"
 	"log"
-	"net/http"
 	"os/exec"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -177,4 +172,80 @@ func removeContainer(server string) error {
 	eraseServerPortMapping(server)
 	g_server_count-- // decrement server count
 	return nil
+}
+
+func main() {
+
+	g_server_shards_mapping = make(map[string]map[string]bool)
+	g_shard_servers_mapping = make(map[string]map[string]bool)
+	g_server_port_mapping = make(map[string]int)
+	g_port_server_mapping = make(map[int]string)
+	g_shards = make(map[string]shardMetaData)
+	g_shard_current_idx = make(map[string]int)
+
+	for i := 0; i < M; i++ {
+		g_servers_hashmap[i] = ""
+	}
+	fmt.Printf("Proxy starting...")
+
+	r := gin.Default()
+
+	r.POST("/init", initHandler)
+	r.GET("/status", statusHandler)
+	r.POST("/add", addHandler)
+	r.DELETE("/rm", rmHandler)
+	r.POST("/read", readHandler)
+	r.POST("/write", writeHandler)
+	r.PUT("/update", updateHandler)
+	r.DELETE("/del", delHandler)
+
+	//check heartbeat and respwan if needed
+	s := gocron.NewScheduler(time.UTC)
+	_, err := s.Every(5).Seconds().SingletonMode().Do(checkHeartbeat)
+	if err != nil {
+		return
+	}
+	s.StartAsync()
+
+	port := "5000"
+	err = r.Run(":" + port)
+	if err != nil {
+		log.Fatalf("Error starting server: %v", err)
+	}
+}
+
+func delHandler(context *gin.Context) {
+
+}
+
+func updateHandler(context *gin.Context) {
+
+}
+
+func writeHandler(context *gin.Context) {
+
+}
+
+func readHandler(context *gin.Context) {
+
+}
+
+func rmHandler(context *gin.Context) {
+
+}
+
+func addHandler(context *gin.Context) {
+
+}
+
+func statusHandler(context *gin.Context) {
+
+}
+
+func initHandler(context *gin.Context) {
+
+}
+
+func checkHeartbeat() {
+
 }
