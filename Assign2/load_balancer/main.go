@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -227,7 +228,61 @@ func updateHandler(c *gin.Context) {
 }
 
 func writeHandler(c *gin.Context) {
-
+	var payload struct {
+		Data []student
+	}
+	jsonString := getJSONstring(c)
+	err := json.Unmarshal([]byte(jsonString), &payload)
+	if err != nil {
+		fmt.Println("Error decoding JSON:", err)
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Error decoding JSON", "status": "failure"})
+		return
+	}
+	dataToWriteToShards := make(map[string][]student)
+	for _, row := range payload.Data {
+		for shard_ := range g_shards {
+			if row.Stud_id >= g_shards[shard_].Stud_id_low && row.Stud_id < g_shards[shard_].Stud_id_high {
+				dataToWriteToShards[shard_] = append(dataToWriteToShards[shard_], row)
+				break
+			}
+		}
+	}
+	for shard_, rows := range dataToWriteToShards {
+		fmt.Printf("\nFor data %v\n", rows)
+		done := true
+		for server := range g_shard_servers_mapping[shard_] {
+			fmt.Printf("\nForwarding to %s\n", server)
+			writeEndpoint := fmt.Sprintf("http://%s:5000/write", server)
+			var body struct {
+				Shard    string
+				Curr_idx int
+				Data     []student
+			}
+			body.Shard = shard_
+			// check if shard_ is in g_shard_current_idx
+			if _, ok := g_shard_current_idx[shard_]; !ok {
+				body.Curr_idx = g_shard_current_idx[shard_]
+			} else {
+				body.Curr_idx = 0
+				g_shard_current_idx[shard_] = 0
+			}
+			body.Data = rows
+			jsonBody, _ := json.Marshal(body)
+			// lock mutex for this shard
+			g_shards[shard_].Mutex.Lock()
+			res, err := http.Post(writeEndpoint, "application/json", bytes.NewReader(jsonBody))
+			g_shards[shard_].Mutex.Unlock()
+			if err != nil {
+				fmt.Printf("\n%v\n%v", err, res)
+				done = false
+				continue
+			}
+		}
+		if done {
+			g_shard_current_idx[shard_] += len(rows)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"message": strconv.Itoa(len(payload.Data)) + " Data entries added", "status": "success"})
 }
 
 type readPayload struct {
