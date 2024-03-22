@@ -126,3 +126,55 @@ func getServerPortMapping(server string) int {
 		h = int(H(uint32(h))) % 64000
 	}
 }
+
+func eraseServerPortMapping(server string) {
+	port := g_server_port_mapping[server]
+	delete(g_server_port_mapping, server)
+	delete(g_port_server_mapping, port)
+}
+
+func spawnContainer(server string) error {
+	cmd := exec.Command("docker", "run", "-d", "--name", server, "-p", fmt.Sprintf("%d:5000", getServerPortMapping(server)), "--network", "assign2_net1", "--network-alias", server, "-e", fmt.Sprintf("SERVER_ID=%s", server), "server_image")
+	err := cmd.Run()
+	if err != nil {
+		log.Printf("Error spawning new server container for %s: %v", server, err)
+		return err
+	}
+	fmt.Printf("\n%v %s spawned successfully. \n", time.Now(), server)
+
+	// fit into hashmap
+	i := stringHash(server)
+	for j := 0; j < K; j++ {
+		pos := Phi(uint32(i), uint32(j)) % M
+		for ; g_servers_hashmap[pos] != ""; pos = (pos + 1) % M {
+		} // linear probing
+		g_servers_hashmap[pos] = server
+	}
+	g_server_count++ // increment server count
+	return nil
+}
+
+func removeContainer(server string) error {
+	cmd := exec.Command("docker", "rm", "-f", server)
+	err := cmd.Run()
+	if err != nil {
+		log.Printf("Error removing server container for %s: %v", server, err)
+		return err
+	}
+	fmt.Printf("\n%s removed successfully. \n", server)
+
+	// remove from hashmap
+	i := stringHash(server)
+	for j := 0; j < K; j++ {
+		pos := Phi(uint32(i), uint32(j)) % M
+		for ; g_servers_hashmap[pos] != server; pos = (pos + 1) % M {
+		} // linear probing
+		if g_servers_hashmap[pos] == server {
+			g_servers_hashmap[pos] = ""
+			break
+		}
+	}
+	eraseServerPortMapping(server)
+	g_server_count-- // decrement server count
+	return nil
+}
