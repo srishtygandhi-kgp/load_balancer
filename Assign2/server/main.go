@@ -170,3 +170,94 @@ type updatePayload struct {
 	Stud_id int    `json:"Stud_id" binding:"required"`
 	Data    StudT  `json:"data" binding:"required"`
 }
+
+func updateHandler(c *gin.Context) {
+	var payload updatePayload
+	jsonData := getJSONstring(c)
+	err := json.Unmarshal([]byte(jsonData), &payload)
+	if err != nil {
+		fmt.Println("Error decoding JSON:", err)
+		return
+	}
+	// get the shard from the request
+	shard := payload.Shard
+	// get the student id from the request
+	Stud_id := payload.Stud_id
+	// get the data from the request
+	data := payload.Data
+	// update the data in the shard
+	result := db.Table(shard).Where("Stud_id = ?", Stud_id).Updates(&data)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// send the response
+	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Data entry for Stud_id:%d updated", Stud_id), "status": "success"})
+}
+
+type delPayload struct {
+	Shard   string `json:"shard" binding:"required"`
+	Stud_id int    `json:"Stud_id" binding:"required"`
+}
+
+func delHandler(c *gin.Context) {
+	var payload delPayload
+	jsonData := getJSONstring(c)
+	err := json.Unmarshal([]byte(jsonData), &payload)
+	if err != nil {
+		fmt.Println("Error decoding JSON:", err)
+		return
+	}
+	// get the shard from the request
+	shard := payload.Shard
+	// get the student id from the request
+	Stud_id := payload.Stud_id
+	// delete the data from the shard
+	result := db.Table(shard).Where("Stud_id = ?", Stud_id).Delete(&StudT{})
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// send the response
+	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Data entry with Stud_id:%d removed", Stud_id), "status": "success"})
+}
+
+func main() {
+	r := gin.Default()
+
+	r.GET("/heartbeat", heartbeatHandler)
+	r.POST("/config", configHandler)
+	r.GET("/copy", copyHandler)
+	r.POST("/read", readHandler)
+	r.POST("/write", writeHandler)
+	r.PUT("/update", updateHandler)
+	r.DELETE("/del", delHandler)
+
+	// Connect to the database
+	dsn := "root:abc@tcp(localhost:3306)/"
+	database, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	for {
+		if err == nil {
+			break
+		}
+		database, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	}
+	_ = database.Exec("CREATE DATABASE IF NOT EXISTS assign2")
+	dsn += "assign2?charset=utf8mb4&parseTime=True&loc=Local"
+	db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	for {
+		if err == nil {
+			break
+		}
+		database, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	}
+
+	port := 5000
+	addr := fmt.Sprintf(":%d", port)
+
+	fmt.Printf("Server is running on http://localhost:%d\n", port)
+	err = r.Run(addr)
+	if err != nil {
+		return
+	}
+}
