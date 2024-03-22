@@ -351,7 +351,72 @@ func rmHandler(c *gin.Context) {
 }
 
 func addHandler(c *gin.Context) {
+	jsonString := getJSONstring(c)
+	var payload addPayload
+	err := json.Unmarshal([]byte(jsonString), &payload)
+	if err != nil {
+		fmt.Println("Error decoding JSON:", err)
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Error decoding JSON", "status": "failure"})
+		return
+	}
 
+	for _, shard_ := range payload.New_shards {
+		g_shards[shard_.Shard_id] = shardMetaData{shard_.Stud_id_low, shard_.Stud_id_low + shard_.Shard_size, &sync.Mutex{}}
+	}
+
+	for serverGiven, shards := range payload.Servers {
+		server := ""
+		for _, c := range serverGiven {
+			if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+				server += string(c)
+			}
+		}
+		err := spawnContainer(server)
+		if err != nil {
+			log.Printf("%v", err)
+			continue
+		}
+		var body configPayload
+		body.Schema = g_schema
+		body.Shards = shards
+		jsonBody, err := json.Marshal(body)
+		configEndpoint := fmt.Sprintf("http://%s:5000/config", server)
+		post, err := http.Post(configEndpoint, "application/json", bytes.NewReader(jsonBody))
+		for {
+			if err == nil {
+				break
+			}
+			post, err = http.Post(configEndpoint, "application/json", bytes.NewReader(jsonBody))
+		}
+		if post.StatusCode != http.StatusOK {
+			//TODO: print error
+			continue
+		}
+		for _, shard_ := range shards {
+			if _, ok := g_shard_servers_mapping[shard_]; !ok {
+				g_shard_servers_mapping[shard_] = make(map[string]bool)
+			}
+			g_shard_servers_mapping[shard_][server] = true
+			if _, ok := g_server_shards_mapping[server]; !ok {
+				g_server_shards_mapping[server] = make(map[string]bool)
+			}
+			g_server_shards_mapping[server][shard_] = true
+		}
+	}
+
+	var toSend struct {
+		N       int
+		Message string
+		Status  string
+	}
+	toSend.N = g_server_count
+	toSend.Message = "Added"
+	for serv := range payload.Servers {
+		toSend.Message += " " + serv
+	}
+	toSend.Status = "success"
+	// return OK
+	c.JSON(http.StatusOK, toSend)
 }
 
 func statusHandler(c *gin.Context) {
