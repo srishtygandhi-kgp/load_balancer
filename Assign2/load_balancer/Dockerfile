@@ -16,3 +16,7 @@ USER root
 EXPOSE 5000
 
 CMD ["./load_balancer"]
+
+
+
+
