@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/go-co-op/gocron"
+	"io"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os/exec"
 	"sync"
 	"time"
@@ -214,35 +218,103 @@ func main() {
 	}
 }
 
-func delHandler(context *gin.Context) {
+func delHandler(c *gin.Context) {
 
 }
 
-func updateHandler(context *gin.Context) {
+func updateHandler(c *gin.Context) {
 
 }
 
-func writeHandler(context *gin.Context) {
+func writeHandler(c *gin.Context) {
 
 }
 
-func readHandler(context *gin.Context) {
+type readPayload struct {
+	Shard   string         `json:"shard" binding:"required"`
+	Stud_id map[string]int `json:"Stud_id" binding:"required"`
+}
+
+type readResponse struct {
+	Data   []student
+	Status string
+}
+
+func readHandler(c *gin.Context) {
+	var payload struct {
+		Stud_id map[string]int
+	}
+	jsonString := getJSONstring(c)
+	err := json.Unmarshal([]byte(jsonString), &payload)
+	if err != nil {
+		fmt.Println("Error decoding JSON:", err)
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Error decoding JSON", "status": "failure"})
+		return
+	}
+	var response struct {
+		shards_queried []string
+		Data           []student
+		Status         string
+	}
+	for shard_ := range g_shards {
+		if !(payload.Stud_id["low"] >= g_shards[shard_].Stud_id_high || payload.Stud_id["high"] <= g_shards[shard_].Stud_id_low) {
+			for server := range g_shard_servers_mapping[shard_] {
+				fmt.Printf("\nForwarding to %s\n", server)
+				readEndpoint := fmt.Sprintf("http://%s:5000/read", server)
+				var body readPayload
+				body.Shard = shard_
+				body.Stud_id = make(map[string]int)
+				body.Stud_id["low"] = max(payload.Stud_id["low"], g_shards[shard_].Stud_id_low)
+				body.Stud_id["high"] = min(payload.Stud_id["high"], g_shards[shard_].Stud_id_high)
+				fmt.Printf("\n%v\n", body) // TODO: remove
+				jsonBody, _ := json.Marshal(body)
+				// mutex for this shard
+				g_shards[shard_].Mutex.Lock()
+				post, err := http.Post(readEndpoint, "application/json", bytes.NewReader(jsonBody))
+				g_shards[shard_].Mutex.Unlock()
+				if err == nil {
+					resp, _ := io.ReadAll(post.Body)
+					var respBody readResponse
+					err := json.Unmarshal(resp, &respBody)
+					if err != nil {
+						continue
+					}
+					response.shards_queried = append(response.shards_queried, shard_)
+					response.Data = append(response.Data, respBody.Data...)
+					break
+				}
+			}
+		}
+	}
+	response.Status = "success"
+	// TODO: need to change
+	c.JSON(http.StatusOK, gin.H{"shards_queried": response.shards_queried, "data": response.Data, "status": response.Status})
+}
+
+func rmHandler(c *gin.Context) {
 
 }
 
-func rmHandler(context *gin.Context) {
+func addHandler(c *gin.Context) {
 
 }
 
-func addHandler(context *gin.Context) {
+func statusHandler(c *gin.Context) {
+	var shardlist []shard
+	for shard_ := range g_shards {
+		shardlist = append(shardlist, shard{g_shards[shard_].Stud_id_low, shard_, g_shards[shard_].Stud_id_high - g_shards[shard_].Stud_id_low})
+	}
+	server_shards_mapping := make(map[string][]string)
+	for server, shards := range g_server_shards_mapping {
+		for shard_ := range shards {
+			server_shards_mapping[server] = append(server_shards_mapping[server], shard_)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"N": g_server_count, "schema": g_schema, "shards": shardlist, "servers": server_shards_mapping})
 
 }
 
-func statusHandler(context *gin.Context) {
-
-}
-
-func initHandler(context *gin.Context) {
+func initHandler(c *gin.Context) {
 
 }
 
