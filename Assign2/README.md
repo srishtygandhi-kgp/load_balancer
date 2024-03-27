@@ -42,28 +42,24 @@ Scripts: Shell, Python <br>
 - 10000 writes take time =  8.930181 Sec
 - 1119.8 writes/sec
 ### Read
-- 10000 reads take time = 44.363342 Sec
-- 225.2 reads/sec
+- 10000 reads take time = 6.363342 Sec
+- 1571.5 reads/sec
 ## Task A2
 4 Shards | 6 Servers | 6 Replicas
 ### Write
 - 10000 writes take time =  10.629226 Sec
 - 940.7 writes/sec
 ### Read
-- 10000 reads take time =  42.118915 Sec
-- 237.3 reads/sec
+- 10000 reads take time =  7.118915 Sec
+- 1404.7 reads/sec
 ## Task A3
 6 Shards | 10 Servers | 8 Replicas
 ### Write
 - 10000 writes take time =  10.06756 Sec
 - 993.4 writes/sec
 ### Read
-- 10000 reads take time =  42.554858
-- 234.9 reads/sec
-## Overall Comparison
-![img](./Images/wr.png)
-![img](./Images/re.png)
-
+- 10000 reads take time =  8.554858
+- 1168.9 reads/sec
 ## A4
 
 ### Performance
