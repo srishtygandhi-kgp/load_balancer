@@ -276,6 +276,230 @@ func readHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": studs, "status": "success"})
 }
 
+func writeHandler(c *gin.Context) {
+
+	var payload writePayload
+	jsonData := getJSONstring(c)
+	err := json.Unmarshal([]byte(jsonData), &payload)
+	log.Printf("Payload: %v\n\n%v\n", jsonData, payload)
+	if err != nil {
+		log.Printf("Error decoding JSON:%v", err)
+		return
+	}
+	// get the shard from the request
+	shard_ := payload.Shard
+	// get the data from the request
+	data := payload.Data
+
+	// implement write ahead logging
+	var logItem logPayload
+	logItem.Operation = "w"
+	logItem.W_Data = data
+	indexLock.Lock()
+	err = writeToLog(logItem, shard_)
+	indexLock.Unlock()
+	if err != nil {
+		log.Printf("Error writing to log for shard %s:%v", shard_, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// check if server is primary
+	var mapT MapT
+	err = db.Table("map_ts").Where("shard_id = ? AND server_id = ?", shard_, os.Getenv("SERVER_ID")).First(&mapT).Error
+	if err != nil {
+		log.Printf("Error getting primary server for shard %s:%v", shard_, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	log.Printf("MapT: %v\n", mapT)
+	if mapT.Primary {
+		// send write request to secondary servers
+		// get list of secondary servers
+		log.Printf("Forwarding to secondary servers for shard:%s\n", shard_)
+		var mapTs []MapT
+		err = db.Table("map_ts").Where("shard_id = ?", shard_).Not("primary", true).Find(&mapTs).Error
+		if err != nil {
+			log.Printf("Error getting secondary servers for shard %s:%v", shard_, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		// send write request to secondary servers
+		for _, mapT := range mapTs {
+			// send write request to secondary server
+
+			fmt.Printf("\nForwarding to %s\n", mapT.Server_id)
+			writeEndpoint := fmt.Sprintf("http://%s:5000/write", mapT.Server_id)
+
+			jsonBody, _ := json.Marshal(payload)
+			res, err := http.Post(writeEndpoint, "application/json", bytes.NewReader(jsonBody))
+			for err != nil || res.StatusCode != http.StatusOK {
+				res, err = http.Post(writeEndpoint, "application/json", bytes.NewReader(jsonBody))
+			}
+		}
+	}
+	indexLock.Lock()
+	err = executeFromLog(fmt.Sprintf("%v", g_shard_logIndex_map[shard_]), shard_)
+	indexLock.Unlock()
+	if err != nil {
+		log.Printf("Error executing from log for shard %s:%v", shard_, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// send the response
+	c.JSON(http.StatusOK, gin.H{"message": "Data entries added", "status": "success"})
+}
+
+func updateHandler(c *gin.Context) {
+	var payload updatePayload
+	jsonData := getJSONstring(c)
+	err := json.Unmarshal([]byte(jsonData), &payload)
+	if err != nil {
+		log.Printf("Error decoding JSON:", err)
+		return
+	}
+	// get the shard from the request
+	shard_ := payload.Shard
+	// get the student id from the request
+	Stud_id := payload.Stud_id
+	// get the data from the request
+	data := payload.Data
+
+	// implement write ahead logging
+	var logItem logPayload
+	logItem.Operation = "u"
+	logItem.UD_Stud_id = Stud_id
+	logItem.U_Data = data
+	indexLock.Lock()
+	err = writeToLog(logItem, shard_)
+	indexLock.Unlock()
+	if err != nil {
+		log.Printf("Error writing to log for shard %s:%v", shard_, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// check if server is primary
+	var mapT MapT
+	err = db.Table("map_ts").Where("shard_id = ? AND server_id = ?", shard_, os.Getenv("SERVER_ID")).First(&mapT).Error
+	if err != nil {
+		log.Printf("Error getting primary server for shard %s:%v", shard_, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	log.Printf("MapT: %v\n", mapT)
+	if mapT.Primary {
+		// send write request to secondary servers
+		// get list of secondary servers
+		log.Printf("Forwarding to secondary servers for shard:%s\n", shard_)
+		var mapTs []MapT
+		err = db.Table("map_ts").Where("shard_id = ?", shard_).Not("primary", true).Find(&mapTs).Error
+		if err != nil {
+			log.Printf("Error getting secondary servers for shard %s:%v", shard_, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		// send update request to secondary servers
+		for _, mapT := range mapTs {
+			// send update request to secondary server
+
+			fmt.Printf("\nForwarding to %s\n", mapT.Server_id)
+			updateEndpoint := fmt.Sprintf("http://%s:5000/update", mapT.Server_id)
+
+			jsonBody, _ := json.Marshal(payload)
+			res, err := http.Post(updateEndpoint, "application/json", bytes.NewReader(jsonBody))
+			for err != nil || res.StatusCode != http.StatusOK {
+				res, err = http.Post(updateEndpoint, "application/json", bytes.NewReader(jsonBody))
+			}
+		}
+	}
+	indexLock.Lock()
+	err = executeFromLog(fmt.Sprintf("%v", g_shard_logIndex_map[shard_]), shard_)
+	indexLock.Unlock()
+	if err != nil {
+		log.Printf("Error executing from log for shard %s:%v", shard_, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// send the response
+	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Data entry for Stud_id:%d updated", Stud_id), "status": "success"})
+}
+
+type delPayload struct {
+	Shard   string `json:"shard" binding:"required"`
+	Stud_id int    `json:"Stud_id" binding:"required"`
+}
+
+func delHandler(c *gin.Context) {
+	var payload delPayload
+	jsonData := getJSONstring(c)
+	err := json.Unmarshal([]byte(jsonData), &payload)
+	if err != nil {
+		log.Printf("Error decoding JSON:", err)
+		return
+	}
+	// get the shard from the request
+	shard_ := payload.Shard
+	// get the student id from the request
+	Stud_id := payload.Stud_id
+
+	// implement write ahead logging
+	var logItem logPayload
+	logItem.Operation = "d"
+	logItem.UD_Stud_id = Stud_id
+	indexLock.Lock()
+	err = writeToLog(logItem, shard_)
+	indexLock.Unlock()
+	if err != nil {
+		log.Printf("Error writing to log for shard %s:%v", shard_, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// check if server is primary
+	var mapT MapT
+	err = db.Table("map_ts").Where("shard_id = ? AND server_id = ?", shard_, os.Getenv("SERVER_ID")).First(&mapT).Error
+	if err != nil {
+		log.Printf("Error getting primary server for shard %s:%v", shard_, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	log.Printf("MapT: %v\n", mapT)
+	if mapT.Primary {
+		// send write request to secondary servers
+		// get list of secondary servers
+		log.Printf("Forwarding to secondary servers for shard:%s\n", shard_)
+		var mapTs []MapT
+		err = db.Table("map_ts").Where("shard_id = ?", shard_).Not("primary", true).Find(&mapTs).Error
+		if err != nil {
+			log.Printf("Error getting secondary servers for shard %s:%v", shard_, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		// send delete request to secondary servers
+		for _, mapT := range mapTs {
+			// send delete request to secondary server
+
+			fmt.Printf("\nForwarding to %s\n", mapT.Server_id)
+			delEndpoint := fmt.Sprintf("http://%s:5000/del", mapT.Server_id)
+
+			jsonBody, _ := json.Marshal(payload)
+			res, err := http.Post(delEndpoint, "application/json", bytes.NewReader(jsonBody))
+			for err != nil || res.StatusCode != http.StatusOK {
+				res, err = http.Post(delEndpoint, "application/json", bytes.NewReader(jsonBody))
+			}
+		}
+	}
+	indexLock.Lock()
+	err = executeFromLog(fmt.Sprintf("%v", g_shard_logIndex_map[shard_]), shard_)
+	indexLock.Unlock()
+	if err != nil {
+		log.Printf("Error executing from log for shard %s:%v", shard_, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// send the response
+	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Data entry with Stud_id:%d removed", Stud_id), "status": "success"})
+}
+
 func lenLogHandler(c *gin.Context) {
 	var payload struct {
 		Shard string
@@ -355,4 +579,112 @@ func main() {
 	if err != nil {
 		return
 	}
+}
+
+func getAllHandler(c *gin.Context) {
+	response := gin.H{}
+	for shard_ := range g_shard_log_map {
+		err := executeFromLog(fmt.Sprintf("%v", g_shard_logIndex_map[shard_]), shard_)
+		if err != nil {
+			log.Printf("Error executing from log for shard %s:%v", shard_, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		// get all the records from the shard
+		var studs []StudT
+		err = db.Table(shard_).Find(&studs).Error
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		response[shard_] = studs
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func addHandler(c *gin.Context) {
+	var payload struct {
+		Shard string
+	}
+	jsonData := getJSONstring(c)
+	err := json.Unmarshal([]byte(jsonData), &payload)
+	if err != nil {
+		log.Printf("Error decoding JSON:", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// get the shard from the request
+	shard_ := payload.Shard
+	if shard_ == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Shard not provided"})
+		return
+	}
+	if _, ok := g_shard_log_map[shard_]; ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Shard already exists"})
+		return
+	}
+	// create a new table for each shard
+	err = db.Table(shard_).AutoMigrate(&StudT{})
+	g_shard_log_map[shard_], err = os.OpenFile(fmt.Sprintf("/data/%s.log", shard_), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0777)
+	g_shard_logIndex_map[shard_] = 0
+	if err != nil {
+		log.Printf("Error opening log file for shard %s:%v", shard_, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// get primary server
+	var mapT MapT
+	err = db.Table("map_ts").Where("shard_id = ?", shard_).Not("primary", false).First(&mapT).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		log.Printf("Error getting primary server for shard %s:%v", shard_, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err == nil {
+		//copy data from primary
+		readEndpoint := fmt.Sprintf("http://%s:5000/copy", mapT.Server_id)
+		jsonBody, _ := json.Marshal(copyPayload{Shard: shard_})
+		get, err := http.NewRequest(http.MethodGet, readEndpoint, bytes.NewReader(jsonBody))
+		if err != nil {
+			log.Printf("Error making request for getting data from primary server for shard %s:%v", shard_, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		res, err := http.DefaultClient.Do(get)
+		if err != nil {
+			log.Printf("Error getting data from primary server for shard %s:%v", shard_, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		// write data to the shard
+		var response struct {
+			Data []StudT
+			Logs []logPayload
+		}
+		err = json.NewDecoder(res.Body).Decode(&response)
+		if err != nil {
+			log.Printf("Error decoding data from primary server for shard %s:%v", shard_, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		db.Table(shard_).Create(&response.Data)
+		// write log file to the shard
+		for _, logItem := range response.Logs {
+			err := writeToLog(logItem, shard_)
+			if err != nil {
+				log.Printf("Error writing to log for shard %s:%v", shard_, err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		}
+		commitsDoneTill := res.Header.Get("Commit-Index")
+		err = executeFromLog(commitsDoneTill, shard_)
+		if err != nil {
+			log.Printf("Error executing from log for shard %s:%v", shard_, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Shard added", "status": "success"})
 }
