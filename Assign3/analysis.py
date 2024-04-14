@@ -69,7 +69,25 @@ async def performRW(numOfShards, numOfServers, numOfReplicas):
             print("Not all responses have a status code of 200.")
         end_time = time.perf_counter()
         writeTime = end_time - start_time
-
+    # perform reads
+    payloads = []
+    urls = []
+    for i in range(numOfRW):
+        payload = {"Stud_id": {"low":i, "high":i+1}}
+        payloads.append(payload)
+        urls.append("http://localhost:5000/read")
+    async with aiohttp.ClientSession() as session:
+        tasks = []
+        for url, payload in zip(urls, payloads):
+            tasks.append(fetch(session, url, payload))
+        start_time = time.perf_counter()
+        responses = await asyncio.gather(*tasks)
+        if all(status == 200 for status, _ in responses):
+            print("All responses have a status code of 200.")
+        else:
+            print("Not all responses have a status code of 200.")
+        end_time = time.perf_counter()
+        readTime = end_time - start_time
     performance["Write"][f"{numOfShards} Shards, {numOfServers} Servers, {numOfReplicas} Replicas"] = writeTime
     performance["Read"][f"{numOfShards} Shards, {numOfServers} Servers, {numOfReplicas} Replicas"] = readTime
 
