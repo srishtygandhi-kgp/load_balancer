@@ -186,3 +186,43 @@ func addHandler(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "Added new servers", "status": "success"})
 }
+
+func rmHandler(c *gin.Context) {
+	jsonString := getJSONstring(c)
+	var payload struct {
+		N       int
+		Servers []string
+	}
+	err := json.Unmarshal([]byte(jsonString), &payload)
+	if err != nil {
+		fmt.Println("Error decoding JSON:", err)
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Error decoding JSON", "status": "failure"})
+		return
+	}
+	// remove servers
+	for _, server := range payload.Servers {
+		for shard_ := range g_shard_server_map {
+			delete(g_shard_server_map[shard_], server)
+		}
+		err := removeContainer(server)
+		if err != nil {
+			log.Printf("%v", err)
+			continue
+		}
+	}
+	// re-elect primary servers if necessary
+	for shard_, servers := range g_shard_server_map {
+		noPrimary := true
+		for server := range servers {
+			if servers[server] {
+				noPrimary = false
+				break
+			}
+		}
+		if noPrimary {
+			reElect(shard_)
+		}
+	}
+	broadcastShardServerMap()
+	c.JSON(http.StatusOK, gin.H{"message": "Removed servers", "status": "success"})
+}
