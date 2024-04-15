@@ -6,18 +6,18 @@ import (
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/go-co-op/gocron"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 	"log"
 	"net/http"
 	"os/exec"
-	"sync"
 	"time"
 )
 
 var (
-	g_shard_server_map = make(map[string]map[string]bool)
-	g_port_mapping     = make(map[string]int)
-	g_port_counter     = 5010
-	infoLock           = &sync.Mutex{}
+	mapdb          = &gorm.DB{}
+	g_port_mapping = make(map[string]int)
+	g_port_counter = 5010
 )
 
 func getServerPortMapping(server string) int {
@@ -29,28 +29,8 @@ func getServerPortMapping(server string) int {
 	return g_port_mapping[server]
 }
 
-func psinfoHandler(c *gin.Context) {
-	infoLock.Lock()
-	defer infoLock.Unlock()
-	c.JSON(http.StatusOK, g_shard_server_map)
-}
-
 func eraseServerPortMapping(server string) {
 	delete(g_port_mapping, server)
-}
-
-func broadcastShardServerMap() {
-	for server := range g_port_mapping {
-		jsonBody, err := json.Marshal(g_shard_server_map)
-		if err != nil {
-			fmt.Print("Error marshalling g_shard_server_map: %v", err)
-		}
-		configEndpoint := fmt.Sprintf("http://%s:5000/updatepsinfo", server)
-		_, err = http.Post(configEndpoint, "application/json", bytes.NewReader(jsonBody))
-		if err != nil {
-			fmt.Print("Error sending g_shard_server_map to server: %v", server)
-		}
-	}
 }
 
 func spawnContainer(server string) error {
@@ -87,9 +67,6 @@ func initHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Error decoding JSON", "status": "failure"})
 		return
 	}
-	for _, shard := range payload.Shards {
-		g_shard_server_map[shard.Shard_id] = make(map[string]bool)
-	}
 	var spawned []string
 	for server := range payload.Servers {
 		err := spawnContainer(server)
@@ -103,7 +80,6 @@ func initHandler(c *gin.Context) {
 		shards := payload.Servers[server]
 		var body configPayload
 		body.Shards = shards
-		body.Map_data = make(map[string]map[string]bool)
 		jsonBody, err := json.Marshal(body)
 		configEndpoint := fmt.Sprintf("http://%s:5000/config", server)
 		post, err := http.Post(configEndpoint, "application/json", bytes.NewReader(jsonBody))
@@ -116,14 +92,15 @@ func initHandler(c *gin.Context) {
 		if post.StatusCode != http.StatusOK {
 			log.Printf("\nError configuring server: %v, %v\n", server, err)
 		}
-		for _, shard_ := range payload.Servers[server] {
-			g_shard_server_map[shard_][server] = false
+		var mapTs []MapT
+		for _, shard_ := range shards {
+			mapTs = append(mapTs, MapT{Shard_id: shard_, Server_id: server, Primary: false})
 		}
+		mapdb.Create(&mapTs)
 	}
 	for _, shard_ := range payload.Shards {
 		reElect(shard_.Shard_id)
 	}
-	broadcastShardServerMap()
 
 	// return OK
 	c.JSON(http.StatusOK, gin.H{"message": "Configured Database", "status": "success"})
@@ -138,11 +115,6 @@ func addHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Error decoding JSON", "status": "failure"})
 		return
 	}
-	for _, shard_ := range payload.New_shards {
-		if _, ok := g_shard_server_map[shard_.Shard_id]; !ok {
-			g_shard_server_map[shard_.Shard_id] = make(map[string]bool)
-		}
-	}
 
 	for server, shards := range payload.Servers {
 		if _, ok := g_port_mapping[server]; !ok {
@@ -153,7 +125,6 @@ func addHandler(c *gin.Context) {
 			}
 			var body configPayload
 			body.Shards = shards
-			body.Map_data = g_shard_server_map
 			jsonBody, err := json.Marshal(body)
 			configEndpoint := fmt.Sprintf("http://%s:5000/config", server)
 			post, err := http.Post(configEndpoint, "application/json", bytes.NewReader(jsonBody))
@@ -166,19 +137,31 @@ func addHandler(c *gin.Context) {
 			if post.StatusCode != http.StatusOK {
 				fmt.Printf("Error configuring server %s: %v", server, err)
 			}
+			var mapTs []MapT
 			for _, shard_ := range shards {
-				g_shard_server_map[shard_][server] = false
+				mapTs = append(mapTs, MapT{Shard_id: shard_, Server_id: server, Primary: false})
 			}
+			mapdb.Create(&mapTs)
 		} else {
 			for _, shard_ := range shards {
-				if _, ok := g_shard_server_map[shard_][server]; !ok {
-					// add server to shard
+				// check if shard already exists for server
+				var mapT MapT
+				err := mapdb.Where("shard_id = ? AND server_id = ?", shard_, server).First(&mapT).Error
+				if err != nil && err != gorm.ErrRecordNotFound {
+					log.Printf("Error getting shard %s for server %s: %v", shard_, server, err)
+					continue
+				}
+				if err == nil {
 					res, err := http.Post(fmt.Sprintf("http://%s:5000/add", server), "application/json", bytes.NewBuffer([]byte(fmt.Sprintf(`{"shard": "%s"}`, shard_))))
 					if err != nil || res.StatusCode != http.StatusOK {
 						log.Printf("Error adding shard %s to server %s: %v", shard_, server, err)
 						continue
 					}
-					g_shard_server_map[shard_][server] = false
+				}
+				err = mapdb.Create(&MapT{Shard_id: shard_, Server_id: server, Primary: false}).Error
+				if err != nil {
+					log.Printf("Error adding shard %s to server %s: %v", shard_, server, err)
+					continue
 				}
 			}
 		}
@@ -186,7 +169,6 @@ func addHandler(c *gin.Context) {
 	for _, shard_ := range payload.New_shards {
 		reElect(shard_.Shard_id)
 	}
-	broadcastShardServerMap()
 
 	c.JSON(http.StatusOK, gin.H{"message": "Added new servers", "status": "success"})
 }
@@ -203,11 +185,14 @@ func rmHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Error decoding JSON", "status": "failure"})
 		return
 	}
+	err = mapdb.Where("server_id IN ?", payload.Servers).Delete(&MapT{}).Error
+	if err != nil {
+		log.Printf("Error removing servers: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Error removing servers", "status": "failure"})
+		return
+	}
 	// remove servers
 	for _, server := range payload.Servers {
-		for shard_ := range g_shard_server_map {
-			delete(g_shard_server_map[shard_], server)
-		}
 		err := removeContainer(server)
 		if err != nil {
 			log.Printf("%v", err)
@@ -215,7 +200,23 @@ func rmHandler(c *gin.Context) {
 		}
 	}
 	// re-elect primary servers if necessary
-	for shard_, servers := range g_shard_server_map {
+	var mapTs []MapT
+	err = mapdb.Find(&mapTs).Error
+	if err != nil {
+		log.Printf("Error getting servers: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Error getting servers", "status": "failure"})
+		return
+	}
+	// convert to map
+	var shardServerMap = make(map[string]map[string]bool)
+	for _, mapT := range mapTs {
+		if shardServerMap[mapT.Shard_id] == nil {
+			shardServerMap[mapT.Shard_id] = make(map[string]bool)
+		}
+		shardServerMap[mapT.Shard_id][mapT.Server_id] = mapT.Primary
+
+	}
+	for shard_, servers := range shardServerMap {
 		noPrimary := true
 		for server := range servers {
 			if servers[server] {
@@ -227,14 +228,22 @@ func rmHandler(c *gin.Context) {
 			reElect(shard_)
 		}
 	}
-	broadcastShardServerMap()
 	c.JSON(http.StatusOK, gin.H{"message": "Removed servers", "status": "success"})
 }
 
 func reElect(shard string) {
 	mostUpdated := ""
 	longestLog := -1
-	for server := range g_shard_server_map[shard] {
+	//get list of servers in shard
+	var mapTs []MapT
+	err := mapdb.Where("shard_id = ?", shard).Find(&mapTs).Error
+	if err != nil {
+		log.Printf("Error getting servers for shard %s: %v", shard, err)
+		return
+	}
+
+	for _, mapT := range mapTs {
+		server := mapT.Server_id
 		// get log length
 		jsonValue, _ := json.Marshal(gin.H{"shard": shard})
 		res, err := http.Post(fmt.Sprintf("http://%s:5000/lenlog", server), "application/json", bytes.NewBuffer(jsonValue))
@@ -256,11 +265,29 @@ func reElect(shard string) {
 			mostUpdated = server
 		}
 	}
-	for server := range g_shard_server_map[shard] {
-		g_shard_server_map[shard][server] = false
+	if mostUpdated == "" {
+		log.Printf("No servers found for shard %s", shard)
+		return
+	}
+	// set primary
+	err = mapdb.Transaction(func(tx *gorm.DB) error {
+		err := tx.Model(&MapT{}).Where("shard_id = ?", shard).Update("primary", false).Error
+		if err != nil {
+			log.Printf("Error updating primary for shard %s: %v", shard)
+			return err
+		}
+		err = tx.Model(&MapT{}).Where("shard_id = ? AND server_id = ?", shard, mostUpdated).Update("primary", true).Error
+		if err != nil {
+			log.Printf("Error updating primary for shard %s: %v", shard, err)
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		log.Printf("Error updating primary for shard %s: %v", shard, err)
+		return
 	}
 	fmt.Printf("\n%s elected as primary for shard %s\n", mostUpdated, shard)
-	g_shard_server_map[shard][mostUpdated] = true
 }
 
 func main() {
@@ -270,7 +297,7 @@ func main() {
 	r.POST("/init", initHandler)
 	r.POST("/add", addHandler)
 	r.POST("/rm", rmHandler)
-	r.GET("/psinfo", psinfoHandler)
+	mapdb = initDB()
 
 	//check heartbeat and respawn if needed
 	s := gocron.NewScheduler(time.UTC)
@@ -287,60 +314,63 @@ func main() {
 	}
 }
 
-func checkHeartbeat() {
-	failure_server_shard_mapping := make(map[string]map[string]bool)
-	server_shard_mapping := make(map[string]map[string]bool)
-	for shard_, s := range g_shard_server_map {
-		for server := range s {
-			if server_shard_mapping[server] == nil {
-				server_shard_mapping[server] = make(map[string]bool)
-			}
-			server_shard_mapping[server][shard_] = true
-		}
+func initDB() *gorm.DB {
+	dsn := "root:abc@tcp(map_db)/map_db?charset=utf8mb4&parseTime=True&loc=Local"
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	for err != nil {
+		db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	}
+	err = db.AutoMigrate(&MapT{})
+	if err != nil {
+		log.Fatalf("Error migrating database: %v", err)
+	}
+	return db
+}
+
+func checkHeartbeat() {
+	server_shard_mapping := make(map[string]map[string]bool)
+	var mapTs []MapT
+	err := mapdb.Find(&mapTs).Error
+	if err != nil {
+		log.Printf("Error getting servers: %v", err)
+		return
+	}
+
+	shardList := make(map[string]bool)
+	for _, mapT := range mapTs {
+		if server_shard_mapping[mapT.Server_id] == nil {
+			server_shard_mapping[mapT.Server_id] = make(map[string]bool)
+		}
+		server_shard_mapping[mapT.Server_id][mapT.Shard_id] = mapT.Primary
+		shardList[mapT.Shard_id] = true
+	}
+	var failedServers []string
 	// get heartbeat from all servers and store unresponsive servers
-	for server, shards := range server_shard_mapping {
+	for server := range server_shard_mapping {
 		_, err := http.Get(fmt.Sprintf("http://%s:5000/heartbeat", server))
 		if err != nil {
 			log.Printf("Error getting heartbeat from %s: %v", server, err)
-			failure_server_shard_mapping[server] = make(map[string]bool)
-			for shard_ := range shards {
-				failure_server_shard_mapping[server][shard_] = true
+			failedServers = append(failedServers, server)
+			for shard_ := range server_shard_mapping[server] {
+				if server_shard_mapping[server][shard_] {
+					reElect(shard_)
+				}
 			}
 		}
 	}
-	if len(failure_server_shard_mapping) == 0 {
+	if len(failedServers) == 0 {
 		return
 	}
-	infoLock.Lock()
-	defer infoLock.Unlock()
-	for server, _ := range failure_server_shard_mapping {
+	for _, server := range failedServers {
 		// remove container
 		err := removeContainer(server)
 		if err != nil {
 			log.Printf("%v", err)
 			continue
 		}
-		// remove server from g_shard_server_map
-		for shard_ := range failure_server_shard_mapping[server] {
-			delete(g_shard_server_map[shard_], server)
-		}
 	}
-	for shard_, s := range g_shard_server_map {
-		reElectRequired := true
-		for server := range s {
-			if s[server] == true {
-				reElectRequired = false
-				break
-			}
-		}
-		if reElectRequired {
-			reElect(shard_)
-		}
-	}
-	broadcastShardServerMap()
 	// spawn new containers for failed servers
-	for server, shards := range failure_server_shard_mapping {
+	for server, shards := range server_shard_mapping {
 		err := spawnContainer(server)
 		if err != nil {
 			log.Printf("%v", err)
@@ -351,7 +381,6 @@ func checkHeartbeat() {
 		for shard_ := range shards {
 			body.Shards = append(body.Shards, shard_)
 		}
-		body.Map_data = g_shard_server_map
 		jsonBody, err := json.Marshal(body)
 		configEndpoint := fmt.Sprintf("http://%s:5000/config", server)
 		post, err := http.Post(configEndpoint, "application/json", bytes.NewReader(jsonBody))
@@ -365,9 +394,5 @@ func checkHeartbeat() {
 			fmt.Printf("Error configuring server %s: %v", server, err)
 			continue
 		}
-		for _, shard_ := range body.Shards {
-			g_shard_server_map[shard_][server] = false
-		}
 	}
-	broadcastShardServerMap()
 }

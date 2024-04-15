@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 	"io"
 	"io/ioutil"
 	"log"
@@ -14,7 +16,8 @@ import (
 )
 
 var (
-	lb = &loadBalancer{}
+	lb    = &loadBalancer{}
+	mapdb = &gorm.DB{}
 )
 
 func getJSONstring(c *gin.Context) string {
@@ -160,6 +163,7 @@ func rmHandler(c *gin.Context) {
 		}
 		deleted++
 	}
+	//TODO : fix this
 	for server, _ := range lb.server_shard_mapping {
 		if deleted == payload.N {
 			break
@@ -196,12 +200,21 @@ func main() {
 	r.PUT("/update", updateHandler)
 	r.DELETE("/del", delHandler)
 	r.GET("/read/:server_id", getallHandler)
+	mapdb = initDB()
 
 	port := "5000"
 	err := r.Run(":" + port)
 	if err != nil {
 		log.Fatalf("Error starting Load Balancer: %v", err)
 	}
+}
+func initDB() *gorm.DB {
+	dsn := "root:abc@tcp(map_db)/map_db?charset=utf8mb4&parseTime=True&loc=Local"
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	for err != nil {
+		db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	}
+	return db
 }
 
 func delHandler(c *gin.Context) {
@@ -221,43 +234,51 @@ func delHandler(c *gin.Context) {
 			lb.shards[shard_].rw.Lock()
 			//defer unlock
 			defer lb.shards[shard_].rw.Unlock()
-			// get psinfo from shard manager
-			resp, err := http.Get("http://shard_manager:5000/psinfo")
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"message": "Error getting psinfo from shard manager", "status": "failure"})
-				return
-			}
-			var psinfo map[string]map[string]bool
-			err = json.NewDecoder(resp.Body).Decode(&psinfo)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"message": "Error decoding psinfo from shard manager", "status": "failure"})
-				return
-			}
 			// send delete request to primary servers
-			for server, isPrimary := range psinfo[shard_] {
-				if isPrimary {
-					// send data to this server
-					dataToSend, err := json.Marshal(payload)
-					if err != nil {
-						c.JSON(http.StatusInternalServerError, gin.H{"message": "Error marshalling data", "status": "failure"})
-						return
-					}
-					del, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("http://%s:5000/del", server), bytes.NewReader(dataToSend))
-					if err != nil {
-						c.JSON(http.StatusInternalServerError, gin.H{"message": "Error creating delete request", "status": "failure"})
-						return
-					}
-					del.Header.Set("Content-Type", "application/json")
-					lb.shards[shard_].req_count++
-					del.Header.Set("Request-Count", strconv.Itoa(lb.shards[shard_].req_count))
-					do, err := http.DefaultClient.Do(del)
-					for err != nil && do.StatusCode != http.StatusOK {
-						// retry
-						do, err = http.DefaultClient.Do(del)
-					}
-					break
-				}
+			var mapT MapT
+			err = mapdb.Model(&MapT{}).Where("shard_id = ?", shard_).Not("primary", false).First(&mapT).Error
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "Error getting primary server", "status": "failure"})
+				return
 			}
+			var reqPayload delPayload
+			reqPayload.Shard = shard_
+			reqPayload.Stud_id = payload.Stud_id
+			// send data to this server
+			dataToSend, err := json.Marshal(reqPayload)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "Error marshalling data", "status": "failure"})
+				return
+			}
+			request, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("http://%s:5000/del", mapT.Server_id), bytes.NewReader(dataToSend))
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "Error creating delete request", "status": "failure"})
+				return
+			}
+			request.Header.Set("Content-Type", "application/json")
+			lb.shards[shard_].req_count++
+			request.Header.Set("Request-Count", strconv.Itoa(lb.shards[shard_].req_count))
+			log.Printf("sending delete request to %s\n", mapT.Server_id)
+			do, err := http.DefaultClient.Do(request)
+			for err != nil || do.StatusCode != http.StatusOK {
+				var mapT MapT
+				err = mapdb.Model(&MapT{}).Where("shard_id = ?", shard_).Not("primary", false).First(&mapT).Error
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"message": "Error getting primary server", "status": "failure"})
+					return
+				}
+				request, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("http://%s:5000/del", mapT.Server_id), bytes.NewReader(dataToSend))
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"message": "Error creating delete request", "status": "failure"})
+					return
+				}
+				request.Header.Set("Content-Type", "application/json")
+				request.Header.Set("Request-Count", strconv.Itoa(lb.shards[shard_].req_count))
+				// retry
+				log.Printf("retrying delete request to %s\n", mapT.Server_id)
+				do, err = http.DefaultClient.Do(request)
+			}
+
 			break
 		}
 
@@ -285,42 +306,49 @@ func updateHandler(c *gin.Context) {
 			//defer unlock
 			defer lb.shards[shard_].rw.Unlock()
 
-			// get psinfo from shard manager
-			resp, err := http.Get("http://shard_manager:5000/psinfo")
+			var mapT MapT
+			err = mapdb.Model(&MapT{}).Where("shard_id = ?", shard_).Not("primary", false).First(&mapT).Error
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"message": "Error getting psinfo from shard manager", "status": "failure"})
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "Error getting primary server", "status": "failure"})
 				return
 			}
-			var psinfo map[string]map[string]bool
-			err = json.NewDecoder(resp.Body).Decode(&psinfo)
+			// send data to this server as put request
+			var reqPayload updatePayload
+			reqPayload.Shard = shard_
+			reqPayload.Stud_id = payload.Stud_id
+			reqPayload.Data = payload.Data
+			dataToSend, err := json.Marshal(reqPayload)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"message": "Error decoding psinfo from shard manager", "status": "failure"})
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "Error marshalling data", "status": "failure"})
 				return
 			}
-			// send update request to primary servers
-			for server, isPrimary := range psinfo[shard_] {
-				if isPrimary {
-					// send data to this server as put request
-					dataToSend, err := json.Marshal(payload.Data)
-					if err != nil {
-						c.JSON(http.StatusInternalServerError, gin.H{"message": "Error marshalling data", "status": "failure"})
-						return
-					}
-					put, err := http.NewRequest(http.MethodPut, fmt.Sprintf("http://%s:5000/update", server), bytes.NewReader(dataToSend))
-					if err != nil {
-						c.JSON(http.StatusInternalServerError, gin.H{"message": "Error creating put request", "status": "failure"})
-						return
-					}
-					put.Header.Set("Content-Type", "application/json")
-					lb.shards[shard_].req_count++
-					put.Header.Set("Request-Count", strconv.Itoa(lb.shards[shard_].req_count))
-					do, err := http.DefaultClient.Do(put)
-					for err != nil && do.StatusCode != http.StatusOK {
-						// retry
-						do, err = http.DefaultClient.Do(put)
-					}
-					break
+			request, err := http.NewRequest(http.MethodPut, fmt.Sprintf("http://%s:5000/update", mapT.Server_id), bytes.NewReader(dataToSend))
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "Error creating put request", "status": "failure"})
+				return
+			}
+			request.Header.Set("Content-Type", "application/json")
+			lb.shards[shard_].req_count++
+			request.Header.Set("Request-Count", strconv.Itoa(lb.shards[shard_].req_count))
+			log.Printf("sending update request to %s\n", mapT.Server_id)
+			do, err := http.DefaultClient.Do(request)
+			for err != nil || do.StatusCode != http.StatusOK {
+				var mapT MapT
+				err = mapdb.Model(&MapT{}).Where("shard_id = ?", shard_).Not("primary", false).First(&mapT).Error
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"message": "Error getting primary server", "status": "failure"})
+					return
 				}
+				request, err := http.NewRequest(http.MethodPut, fmt.Sprintf("http://%s:5000/update", mapT.Server_id), bytes.NewReader(dataToSend))
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"message": "Error creating put request", "status": "failure"})
+					return
+				}
+				request.Header.Set("Content-Type", "application/json")
+				request.Header.Set("Request-Count", strconv.Itoa(lb.shards[shard_].req_count))
+				// retry
+				log.Printf("retrying update request to %s\n", mapT.Server_id)
+				do, err = http.DefaultClient.Do(request)
 			}
 			break
 		}
@@ -355,45 +383,51 @@ func writeHandler(c *gin.Context) {
 		defer lb.shards[shard_].rw.Unlock()
 	}
 
-	// get psinfo from shard manager
-	resp, err := http.Get("http://shard_manager:5000/psinfo")
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Error getting psinfo from shard manager", "status": "failure"})
-		return
-	}
-	var psinfo map[string]map[string]bool
-	err = json.NewDecoder(resp.Body).Decode(&psinfo)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Error decoding psinfo from shard manager", "status": "failure"})
-		return
-	}
 	// send write request to primary servers
 	for shard_, data := range dataToWriteToShards {
-		for server, isPrimary := range psinfo[shard_] {
-			if isPrimary {
-				// send data to this server
-				var payload writePayload
-				payload.Shard = shard_
-				payload.Data = data
-				dataToSend, err := json.Marshal(payload)
-				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"message": "Error marshalling data", "status": "failure"})
-					return
-				}
-				request, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s:5000/write", server), bytes.NewReader(dataToSend))
-				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"message": "Error creating write request", "status": "failure"})
-					return
-				}
-				lb.shards[shard_].req_count++
-				request.Header.Set("Request-Count", strconv.Itoa(lb.shards[shard_].req_count))
-				do, err := http.DefaultClient.Do(request)
-				for err != nil && do.StatusCode != http.StatusOK {
-					// retry
-					do, err = http.DefaultClient.Do(request)
-				}
-				break
+		log.Printf("Writing to shard %s\n", shard_)
+		var mapT MapT
+		err = mapdb.Model(&MapT{}).Where("shard_id = ?", shard_).Not("primary", false).First(&mapT).Error
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Error getting primary server", "status": "failure"})
+			return
+		}
+		// send data to this server
+		var payload writePayload
+		payload.Shard = shard_
+		payload.Data = data
+		dataToSend, err := json.Marshal(payload)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Error marshalling data", "status": "failure"})
+			return
+		}
+		request, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s:5000/write", mapT.Server_id), bytes.NewReader(dataToSend))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Error creating write request", "status": "failure"})
+			return
+		}
+		lb.shards[shard_].req_count++
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Request-Count", strconv.Itoa(lb.shards[shard_].req_count))
+		log.Printf("sending write request to %s\n", mapT.Server_id)
+		do, err := http.DefaultClient.Do(request)
+		for err != nil || do.StatusCode != http.StatusOK {
+			var mapT MapT
+			err = mapdb.Model(&MapT{}).Where("shard_id = ?", shard_).Not("primary", false).First(&mapT).Error
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "Error getting primary server", "status": "failure"})
+				return
 			}
+			request, err = http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s:5000/write", mapT.Server_id), bytes.NewReader(dataToSend))
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "Error creating write request", "status": "failure"})
+				return
+			}
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Request-Count", strconv.Itoa(lb.shards[shard_].req_count))
+			// retry
+			log.Printf("retrying write request to %s\n", mapT.Server_id)
+			do, err = http.DefaultClient.Do(request)
 		}
 
 	}
@@ -458,6 +492,21 @@ func getallHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Error getting data from server", "status": "failure"})
 		return
 	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Error reading server response", "status": "failure"})
+		return
+	}
+
+	var data interface{}
+	err = json.Unmarshal(bodyBytes, &data)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Error parsing server response", "status": "failure"})
+		return
+	}
+
 	// relay the response to the client
-	c.JSON(http.StatusOK, resp.Body)
+	c.JSON(http.StatusOK, data)
 }
