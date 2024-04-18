@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -18,11 +19,11 @@ import (
 )
 
 var (
-	db                   *gorm.DB
-	mapdb                *gorm.DB
-	g_shard_log_map      = make(map[string]*LogT)
-	g_shard_logIndex_map = make(map[string]*int)
-	indexLock            = &sync.Mutex{}
+	db              *gorm.DB
+	mapdb           *gorm.DB
+	g_shard_log_map = make(map[string]*LogT)
+	indexLock       = &sync.Mutex{}
+	configDone      = false
 )
 
 func getJSONstring(c *gin.Context) string {
@@ -53,7 +54,7 @@ func writeToLog(logItem logPayload, shard_ string) error {
 
 func executeFromLog(shard_ string) error {
 	logData := g_shard_log_map[shard_].data
-	idx := g_shard_logIndex_map[shard_]
+	idx := g_shard_log_map[shard_].index
 	// split the logData by \n
 	logItems := strings.Split(string(logData), "\n")
 	if logItems[len(logItems)-1] == "" {
@@ -67,35 +68,68 @@ func executeFromLog(shard_ string) error {
 			return err
 		}
 		if logItem.Operation == "w" {
-			result := db.Table(shard_).Create(&logItem.W_Data)
-			if result.Error != nil {
-				log.Fatalf("\nError performing write from log item: %v\n", result.Error)
+			err := db.Transaction(func(tx *gorm.DB) error {
+				result := tx.Table(shard_).Clauses(clause.OnConflict{DoNothing: true}).Create(&logItem.W_Data)
+				if result.Error != nil {
+					return err
+				}
+				err := os.WriteFile(fmt.Sprintf("/data/%s_index.log", shard_), []byte(fmt.Sprintf("%v", *idx+1)), 0777)
+				if err != nil {
+					return err
+				}
+				*idx = *idx + 1
+				return nil
+			})
+			if err != nil {
+				log.Fatalf("\nError performing write from log item: %v\n", err)
 				return err
 			}
-			*idx = *idx + 1
 		}
 		if logItem.Operation == "u" {
-			result := db.Table(shard_).Where("Stud_id = ?", logItem.UD_Stud_id).Updates(&logItem.U_Data)
-			if result.Error != nil {
-				log.Fatalf("\nError performing update from log item: %v\n", result.Error)
+			err := db.Transaction(func(tx *gorm.DB) error {
+				result := tx.Table(shard_).Where("Stud_id = ?", logItem.UD_Stud_id).Updates(&logItem.U_Data)
+				if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+					return err
+				}
+				err := os.WriteFile(fmt.Sprintf("/data/%s_index.log", shard_), []byte(fmt.Sprintf("%v", *idx+1)), 0777)
+				if err != nil {
+					return err
+				}
+				*idx = *idx + 1
+				return nil
+			})
+			if err != nil {
+				log.Fatalf("\nError performing update from log item: %v\n", err)
 				return err
 			}
-			*idx = *idx + 1
 		}
 		if logItem.Operation == "d" {
-			result := db.Table(shard_).Where("Stud_id = ?", logItem.UD_Stud_id).Delete(&StudT{})
-			if result.Error != nil {
-				log.Fatalf("\nError performing delete from log item: %v\n", result.Error)
+			err := db.Transaction(func(tx *gorm.DB) error {
+				result := tx.Table(shard_).Where("Stud_id = ?", logItem.UD_Stud_id).Delete(&StudT{})
+				if result.Error != nil {
+					return err
+				}
+				err := os.WriteFile(fmt.Sprintf("/data/%s_index.log", shard_), []byte(fmt.Sprintf("%v", *idx+1)), 0777)
+				if err != nil {
+					return err
+				}
+				*idx = *idx + 1
+				return nil
+			})
+			if err != nil {
+				log.Fatalf("\nError performing delete from log item: %v\n", err)
 				return err
 			}
-			*idx = *idx + 1
 		}
 	}
-	*idx = len(logItems)
 	return nil
 }
 
 func heartbeatHandler(c *gin.Context) {
+	if !configDone {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Configuration not done"})
+		return
+	}
 	// Respond with an empty body and 200 OK status for heartbeat
 	c.JSON(http.StatusOK, gin.H{})
 }
@@ -121,9 +155,15 @@ func configHandler(c *gin.Context) {
 		g_shard_log_map[shard_] = new(LogT)
 		g_shard_log_map[shard_].file, err = os.OpenFile(fmt.Sprintf("/data/%s.log", shard_), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0777)
 		g_shard_log_map[shard_].data = []byte{}
-		g_shard_logIndex_map[shard_] = new(int)
+		g_shard_log_map[shard_].index = new(int)
 		if err != nil {
 			log.Printf("Error opening log file for shard %s:%v", shard_, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		g_shard_log_map[shard_].indexFile, err = os.OpenFile(fmt.Sprintf("/data/%s_index.log", shard_), os.O_RDWR|os.O_CREATE, 0777)
+		if err != nil {
+			log.Printf("Error opening index file for shard %s:%v", shard_, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -171,7 +211,12 @@ func configHandler(c *gin.Context) {
 					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 					return
 				}
-				db.Table(shard_).Create(&response.Data)
+				err = db.Table(shard_).Create(&response.Data).Error
+				if err != nil {
+					log.Printf("Error writing data to shard %s:%v", shard_, err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
 				// write log file to the shard
 				for _, logItem := range response.Logs {
 					err := writeToLog(logItem, shard_)
@@ -182,10 +227,15 @@ func configHandler(c *gin.Context) {
 					}
 				}
 				commitsDoneTill := res.Header.Get("Commit-Index")
-				*g_shard_logIndex_map[shard_], err = strconv.Atoi(commitsDoneTill)
+				*g_shard_log_map[shard_].index, err = strconv.Atoi(commitsDoneTill)
 				if err != nil {
 					log.Printf("Error converting commit index to int for shard %s:%v", shard_, err)
 					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
+				err = os.WriteFile(fmt.Sprintf("/data/%s_index.log", shard_), []byte(commitsDoneTill), 0777)
+				if err != nil {
+					log.Printf("Error writing commit index to file for shard %s:%v", shard_, err)
 					return
 				}
 				err = executeFromLog(shard_)
@@ -200,6 +250,7 @@ func configHandler(c *gin.Context) {
 	}
 	message = message[:len(message)-2]
 	message += "configured"
+	configDone = true
 	c.JSON(http.StatusOK, gin.H{"message": message, "status": "success"})
 }
 
@@ -207,6 +258,10 @@ func configHandler(c *gin.Context) {
 // change copy to handle single shard instead of shard array as we are not using that functionality
 
 func copyHandler(c *gin.Context) {
+	if !configDone {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Configuration not done"})
+		return
+	}
 	var payload copyPayload
 	jsonData := getJSONstring(c)
 	err := json.Unmarshal([]byte(jsonData), &payload)
@@ -246,12 +301,16 @@ func copyHandler(c *gin.Context) {
 		}
 		logs = append(logs, logItemStruct)
 	}
-	c.Header("Commit-Index", fmt.Sprintf("%v", *g_shard_logIndex_map[shard_]))
+	c.Header("Commit-Index", fmt.Sprintf("%v", *g_shard_log_map[shard_].index))
 	// send the response
 	c.JSON(http.StatusOK, gin.H{"Data": studs, "Logs": logs})
 }
 
 func readHandler(c *gin.Context) {
+	if !configDone {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Configuration not done"})
+		return
+	}
 	var payload readPayload
 	jsonData := getJSONstring(c)
 	err := json.Unmarshal([]byte(jsonData), &payload)
@@ -276,7 +335,10 @@ func readHandler(c *gin.Context) {
 }
 
 func writeHandler(c *gin.Context) {
-
+	if !configDone {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Configuration not done"})
+		return
+	}
 	var payload writePayload
 	jsonData := getJSONstring(c)
 	err := json.Unmarshal([]byte(jsonData), &payload)
@@ -376,6 +438,10 @@ func writeHandler(c *gin.Context) {
 }
 
 func updateHandler(c *gin.Context) {
+	if !configDone {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Configuration not done"})
+		return
+	}
 	var payload updatePayload
 	jsonData := getJSONstring(c)
 	err := json.Unmarshal([]byte(jsonData), &payload)
@@ -481,6 +547,10 @@ type delPayload struct {
 }
 
 func delHandler(c *gin.Context) {
+	if !configDone {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Configuration not done"})
+		return
+	}
 	var payload delPayload
 	jsonData := getJSONstring(c)
 	err := json.Unmarshal([]byte(jsonData), &payload)
@@ -578,6 +648,10 @@ func delHandler(c *gin.Context) {
 }
 
 func lenLogHandler(c *gin.Context) {
+	if !configDone {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Configuration not done"})
+		return
+	}
 	var payload struct {
 		Shard string
 	}
@@ -642,6 +716,7 @@ func main() {
 	log.Printf("Server is running on http://localhost:%d\n", port)
 	err = r.Run(addr)
 	if err != nil {
+		log.Fatalf("Error running server: %v", err)
 		return
 	}
 }
@@ -655,6 +730,10 @@ func initDB() *gorm.DB {
 }
 
 func getAllHandler(c *gin.Context) {
+	if !configDone {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Configuration not done"})
+		return
+	}
 	response := gin.H{}
 	for shard_ := range g_shard_log_map {
 		indexLock.Lock()
@@ -678,6 +757,10 @@ func getAllHandler(c *gin.Context) {
 }
 
 func addHandler(c *gin.Context) {
+	if !configDone {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Configuration not done"})
+		return
+	}
 	var payload struct {
 		Shard string
 	}
@@ -694,24 +777,36 @@ func addHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Shard not provided"})
 		return
 	}
-	if _, ok := g_shard_log_map[shard_]; !ok {
-		// create a new table for each shard
-		err = db.Table(shard_).AutoMigrate(&StudT{})
-		g_shard_log_map[shard_] = new(LogT)
-		g_shard_log_map[shard_].file, err = os.OpenFile(fmt.Sprintf("/data/%s.log", shard_), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0777)
-		g_shard_log_map[shard_].data = []byte{}
-		g_shard_logIndex_map[shard_] = new(int)
-		if err != nil {
-			log.Printf("Error opening log file for shard %s:%v", shard_, err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
+	if _, ok := g_shard_log_map[shard_]; ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Shard already exists"})
+		return
 	}
+	// create a new table for each shard
+	err = db.Table(shard_).AutoMigrate(&StudT{})
+	g_shard_log_map[shard_] = new(LogT)
+	g_shard_log_map[shard_].file, err = os.OpenFile(fmt.Sprintf("/data/%s.log", shard_), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0777)
+	g_shard_log_map[shard_].data = []byte{}
+	g_shard_log_map[shard_].index = new(int)
+	if err != nil {
+		log.Printf("Error opening log file for shard %s:%v", shard_, err)
+		delete(g_shard_log_map, shard_)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	g_shard_log_map[shard_].indexFile, err = os.OpenFile(fmt.Sprintf("/data/%s_index.log", shard_), os.O_RDWR|os.O_CREATE, 0777)
+	if err != nil {
+		log.Printf("Error opening index file for shard %s:%v", shard_, err)
+		delete(g_shard_log_map, shard_)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
 	// get primary server
 	var mapTs []MapT
 	err = mapdb.Model(&MapT{}).Where("shard_id = ?", shard_).Find(&mapTs).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		log.Printf("Error getting primary server for shard %s:%v", shard_, err)
+		delete(g_shard_log_map, shard_)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -732,12 +827,14 @@ func addHandler(c *gin.Context) {
 			if err != nil {
 				log.Printf("Error making request for getting data from primary server for shard %s:%v", shard_, err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				delete(g_shard_log_map, shard_)
 				return
 			}
 			res, err := http.DefaultClient.Do(get)
 			if err != nil {
 				log.Printf("Error getting data from primary server for shard %s:%v", shard_, err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				delete(g_shard_log_map, shard_)
 				return
 			}
 			// write data to the shard
@@ -749,24 +846,46 @@ func addHandler(c *gin.Context) {
 			if err != nil {
 				log.Printf("Error decoding data from primary server for shard %s:%v", shard_, err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				delete(g_shard_log_map, shard_)
 				return
 			}
-			db.Table(shard_).Create(&response.Data)
+			err = db.Table(shard_).Create(&response.Data).Error
+			if err != nil {
+				log.Printf("Error writing data to shard %s:%v", shard_, err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				delete(g_shard_log_map, shard_)
+				return
+			}
 			// write log file to the shard
 			for _, logItem := range response.Logs {
 				err := writeToLog(logItem, shard_)
 				if err != nil {
 					log.Printf("Error writing to log for shard %s:%v", shard_, err)
 					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					delete(g_shard_log_map, shard_)
 					return
 				}
 			}
 			commitsDoneTill := res.Header.Get("Commit-Index")
-			*g_shard_logIndex_map[shard_], err = strconv.Atoi(commitsDoneTill)
+			*g_shard_log_map[shard_].index, err = strconv.Atoi(commitsDoneTill)
+			if err != nil {
+				log.Printf("Error converting commit index to int for shard %s:%v", shard_, err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				delete(g_shard_log_map, shard_)
+				return
+			}
+			err = os.WriteFile(fmt.Sprintf("/data/%s_index.log", shard_), []byte(commitsDoneTill), 0777)
+			if err != nil {
+				log.Printf("Error writing commit index to file for shard %s:%v", shard_, err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				delete(g_shard_log_map, shard_)
+				return
+			}
 			err = executeFromLog(shard_)
 			if err != nil {
 				log.Printf("Error executing from log for shard %s:%v", shard_, err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				delete(g_shard_log_map, shard_)
 				return
 
 			}

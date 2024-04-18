@@ -1,0 +1,14 @@
+FROM golang:latest
+
+# # Install Docker
+RUN apt-get update && apt-get install -y docker.io
+
+WORKDIR /app
+
+COPY . .
+
+RUN go mod tidy
+
+USER root
+
+EXPOSE 5000

@@ -1,0 +1,15 @@
+FROM golang:latest
+
+
+WORKDIR /app
+
+COPY . .
+
+RUN go mod tidy
+
+USER root
+
+EXPOSE 5000
+
+
+

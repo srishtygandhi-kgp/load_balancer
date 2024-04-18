@@ -17,24 +17,10 @@ import (
 )
 
 var (
-	mapdb          = &gorm.DB{}
-	g_port_mapping = make(map[string]int)
-	g_port_counter = 5010
-	heartRmLock    = &sync.Mutex{}
+	mapdb             = &gorm.DB{}
+	active_containers = make(map[string]bool)
+	heartRmLock       = &sync.Mutex{}
 )
-
-func getServerPortMapping(server string) int {
-	if port, ok := g_port_mapping[server]; ok {
-		return port
-	}
-	g_port_mapping[server] = g_port_counter
-	g_port_counter++
-	return g_port_mapping[server]
-}
-
-func eraseServerPortMapping(server string) {
-	delete(g_port_mapping, server)
-}
 
 func spawnContainer(server string) error {
 	cmd := exec.Command("docker", "rm", "-f", server)
@@ -42,12 +28,13 @@ func spawnContainer(server string) error {
 	if err != nil {
 		return err
 	}
-	cmd = exec.Command("docker", "run", "-d", "--name", server, "-p", fmt.Sprintf("%d:5000", getServerPortMapping(server)), "--network", "assign3_net1", "--network-alias", server, "-e", fmt.Sprintf("SERVER_ID=%s", server), "server_image")
+	cmd = exec.Command("docker", "run", "-d", "--name", server, "-p", ":5000", "--network", "assign3_net1", "--network-alias", server, "-e", fmt.Sprintf("SERVER_ID=%s", server), "server_image")
 	err = cmd.Run()
 	if err != nil {
 		log.Printf("Error spawning new server container for %s: %v", server, err)
 		return err
 	}
+	active_containers[server] = true
 	fmt.Printf("\n%v %s spawned successfully. \n", time.Now(), server)
 	return nil
 }
@@ -61,7 +48,7 @@ func removeContainer(server string) error {
 	}
 	fmt.Printf("\n%s removed successfully. \n", server)
 
-	eraseServerPortMapping(server)
+	delete(active_containers, server)
 	return nil
 }
 
@@ -129,41 +116,18 @@ func addHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Error decoding JSON", "status": "failure"})
 		return
 	}
-
+	log.Printf("add Payload: %v", payload)
+	var spawned map[string]configPayload
+	spawned = make(map[string]configPayload)
 	for server, shards := range payload.Servers {
-		if _, ok := g_port_mapping[server]; !ok {
+		if _, ok := active_containers[server]; !ok {
 			err := spawnContainer(server)
 			if err != nil {
 				log.Printf("%v", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"message": "Error spawning new servers", "status": "failure"})
 				return
 			}
-			var body configPayload
-			body.Shards = shards
-			jsonBody, err := json.Marshal(body)
-			configEndpoint := fmt.Sprintf("http://%s:5000/config", server)
-			post, err := http.Post(configEndpoint, "application/json", bytes.NewReader(jsonBody))
-			for {
-				if err == nil {
-					break
-				}
-				post, err = http.Post(configEndpoint, "application/json", bytes.NewReader(jsonBody))
-			}
-			if post.StatusCode != http.StatusOK {
-				log.Printf("Error configuring server %s: %v", server, err)
-				c.JSON(http.StatusInternalServerError, gin.H{"message": "Error configuring new servers", "status": "failure"})
-				return
-			}
-			var mapTs []MapT
-			for _, shard_ := range shards {
-				mapTs = append(mapTs, MapT{Shard_id: shard_, Server_id: server, Primary: false})
-			}
-			err = mapdb.Create(&mapTs).Error
-			if err != nil {
-				log.Printf("Error adding shards to server %s: %v", server, err)
-				c.JSON(http.StatusInternalServerError, gin.H{"message": "Error adding shards to new servers", "status": "failure"})
-				return
-			}
+			spawned[server] = configPayload{Shards: shards}
 		} else {
 			for _, shard_ := range shards {
 				// check if shard already exists for server
@@ -174,21 +138,47 @@ func addHandler(c *gin.Context) {
 					c.JSON(http.StatusInternalServerError, gin.H{"message": "Error adding shard to new servers", "status": "failure"})
 					return
 				}
-				if err == nil {
+				if err != nil {
 					res, err := http.Post(fmt.Sprintf("http://%s:5000/add", server), "application/json", bytes.NewBuffer([]byte(fmt.Sprintf(`{"shard": "%s"}`, shard_))))
 					if err != nil || res.StatusCode != http.StatusOK {
 						log.Printf("Error adding shard %s to server %s: %v", shard_, server, err)
 						c.JSON(http.StatusInternalServerError, gin.H{"message": "Error adding shard to new servers", "status": "failure"})
 						return
 					}
-				}
-				err = mapdb.Create(&MapT{Shard_id: shard_, Server_id: server, Primary: false}).Error
-				if err != nil {
-					log.Printf("Error adding shard %s to server %s: %v", shard_, server, err)
-					c.JSON(http.StatusInternalServerError, gin.H{"message": "Error adding shard to new servers", "status": "failure"})
-					return
+					err = mapdb.Create(&MapT{Shard_id: shard_, Server_id: server, Primary: false}).Error
+					if err != nil {
+						log.Printf("Error adding shard %s to server %s: %v", shard_, server, err)
+						c.JSON(http.StatusInternalServerError, gin.H{"message": "Error adding shard to new servers", "status": "failure"})
+						return
+					}
 				}
 			}
+		}
+	}
+	for server, body := range spawned {
+		jsonBody, err := json.Marshal(body)
+		configEndpoint := fmt.Sprintf("http://%s:5000/config", server)
+		post, err := http.Post(configEndpoint, "application/json", bytes.NewReader(jsonBody))
+		for {
+			if err == nil {
+				break
+			}
+			post, err = http.Post(configEndpoint, "application/json", bytes.NewReader(jsonBody))
+		}
+		if post.StatusCode != http.StatusOK {
+			log.Printf("Error configuring server %s: %v", server, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Error configuring server", "status": "failure"})
+			return
+		}
+		var mapTs []MapT
+		for _, shard_ := range body.Shards {
+			mapTs = append(mapTs, MapT{Shard_id: shard_, Server_id: server, Primary: false})
+		}
+		err = mapdb.Create(&mapTs).Error
+		if err != nil {
+			log.Printf("error adding shards to new server %s : %v", server, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Error adding shards to new servers", "status": "failure"})
+			return
 		}
 	}
 	for _, shard_ := range payload.New_shards {
@@ -338,7 +328,7 @@ func main() {
 	port := "5000"
 	err = r.Run(":" + port)
 	if err != nil {
-		log.Fatalf("Error starting Load Balancer: %v", err)
+		log.Fatalf("Error starting Shard Manager: %v", err)
 	}
 }
 
@@ -374,43 +364,33 @@ func checkHeartbeat() {
 		server_shard_mapping[mapT.Server_id][mapT.Shard_id] = mapT.Primary
 		shardList[mapT.Shard_id] = true
 	}
-	var failedServers []string
+	var spawned map[string]configPayload
+	spawned = make(map[string]configPayload)
 	// get heartbeat from all servers and store unresponsive servers
 	for server := range server_shard_mapping {
 		_, err := http.Get(fmt.Sprintf("http://%s:5000/heartbeat", server))
 		if err != nil {
 			log.Printf("Error getting heartbeat from %s: %v", server, err)
-			failedServers = append(failedServers, server)
+			var body configPayload
 			for shard_ := range server_shard_mapping[server] {
 				if server_shard_mapping[server][shard_] {
 					reElect(shard_)
 				}
+				body.Shards = append(body.Shards, shard_)
 			}
+			err = spawnContainer(server)
+			if err != nil {
+				log.Printf("%v", err)
+				continue
+			}
+			spawned[server] = body
 		}
 	}
-	if len(failedServers) == 0 {
+	if len(spawned) == 0 {
 		return
 	}
-	for _, server := range failedServers {
-		// remove container
-		err := removeContainer(server)
-		if err != nil {
-			log.Printf("%v", err)
-			continue
-		}
-	}
 	// spawn new containers for failed servers
-	for server, shards := range server_shard_mapping {
-		err := spawnContainer(server)
-		if err != nil {
-			log.Printf("%v", err)
-			continue
-		}
-		var body configPayload
-		body.Shards = make([]string, 0)
-		for shard_ := range shards {
-			body.Shards = append(body.Shards, shard_)
-		}
+	for server, body := range spawned {
 		jsonBody, err := json.Marshal(body)
 		configEndpoint := fmt.Sprintf("http://%s:5000/config", server)
 		post, err := http.Post(configEndpoint, "application/json", bytes.NewReader(jsonBody))

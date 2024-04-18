@@ -1,11 +1,9 @@
-FROM golang:latest
-
+FROM lb_base_image
 
 WORKDIR /app
 
 COPY . .
 
-RUN go mod tidy
 
 RUN go build -o load_balancer main.go lb.go types.go
 

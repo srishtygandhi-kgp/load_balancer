@@ -14,8 +14,10 @@ type MapT struct {
 	Primary   bool
 }
 type LogT struct {
-	file *os.File
-	data []byte
+	file      *os.File
+	data      []byte
+	index     *int
+	indexFile *os.File
 }
 
 func (l *LogT) Write(data []byte) error {

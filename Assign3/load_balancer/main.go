@@ -223,7 +223,7 @@ func rmHandler(c *gin.Context) {
 	// select one of remaining servers to add shards
 	for server := range remainingServers {
 		backupServer = server
-		addReq.Servers[server] = make([]string, 0)
+		addReq.Servers[backupServer] = make([]string, 0)
 		break
 	}
 	for _, shard_ := range lb.shards {
@@ -550,6 +550,7 @@ func readHandler(c *gin.Context) {
 		Data           []student
 		Status         string
 	}
+	response.Status = ""
 	for shard_, shardMetaData_ := range lb.shards {
 		if !(payload.Stud_id["low"] >= shardMetaData_.Stud_id_high || payload.Stud_id["high"] <= shardMetaData_.Stud_id_low) {
 			// acquire shared lock
@@ -578,10 +579,17 @@ func readHandler(c *gin.Context) {
 				}
 				response.shards_queried = append(response.shards_queried, shard_)
 				response.Data = append(response.Data, respBody.Data...)
+			} else {
+				// add failed shard to response.status
+				response.Status += shard_ + " "
 			}
 		}
 	}
-	response.Status = "success"
+	if response.Status == "" {
+		response.Status = "success"
+	} else {
+		response.Status += "failed"
+	}
 	c.JSON(http.StatusOK, gin.H{"shards_queried": response.shards_queried, "data": response.Data, "status": response.Status})
 }
 

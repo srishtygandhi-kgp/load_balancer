@@ -1,4 +1,4 @@
-FROM base_image
+FROM server_base_image
 
 WORKDIR /docker-entrypoint-initdb.d/
 COPY . .

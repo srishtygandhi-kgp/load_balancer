@@ -1,13 +1,8 @@
-FROM golang:latest
-
-# # Install Docker
-RUN apt-get update && apt-get install -y docker.io
+FROM shm_base_image
 
 WORKDIR /app
 
 COPY . .
-
-RUN go mod tidy
 
 RUN go build -o shard_manager main.go types.go
 
