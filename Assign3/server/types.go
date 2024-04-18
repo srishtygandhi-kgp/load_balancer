@@ -1,5 +1,7 @@
 package main
 
+import "os"
+
 type StudT struct {
 	Stud_id    int `gorm:"primaryKey"`
 	Stud_name  string
@@ -11,10 +13,22 @@ type MapT struct {
 	Server_id string
 	Primary   bool
 }
+type LogT struct {
+	file *os.File
+	data []byte
+}
+
+func (l *LogT) Write(data []byte) error {
+	l.data = append(l.data, data...)
+	_, err := l.file.Write(data)
+	if err != nil {
+		return err
+	}
+	return nil
+}
 
 type configPayload struct {
-	Shards   []string                   `json:"shards" binding:"required"`
-	Map_data map[string]map[string]bool `json:"map_data" binding:"required"`
+	Shards []string `json:"shards" binding:"required"`
 }
 
 type readPayload struct {

@@ -8,7 +8,7 @@ import (
 
 type loadBalancer struct {
 	shards               map[string]*shardMetaData
-	server_shard_mapping map[string][]string
+	server_shard_mapping map[string]map[string]bool
 }
 type shardMetaData struct {
 	Stud_id_low  int
@@ -59,11 +59,11 @@ func (lb *loadBalancer) insertServer(server string, shard_id string) {
 	//add server to mapping
 	if _, ok := lb.server_shard_mapping[server]; !ok {
 		if lb.server_shard_mapping == nil {
-			lb.server_shard_mapping = make(map[string][]string)
+			lb.server_shard_mapping = make(map[string]map[string]bool)
 		}
-		lb.server_shard_mapping[server] = []string{}
+		lb.server_shard_mapping[server] = make(map[string]bool)
 	}
-	lb.server_shard_mapping[server] = append(lb.server_shard_mapping[server], shard_id)
+	lb.server_shard_mapping[server][shard_id] = false
 	// fit into hashmap
 	i := stringHash(server)
 	for j := 0; j < K; j++ {
@@ -94,13 +94,8 @@ func (lb *loadBalancer) removeServer(server string, shard_id string) {
 	}
 	// remove server from shard
 	delete(lb.shards[shard_id].servers, server)
-	// remove server from mapping
-	for i, shard_ := range lb.server_shard_mapping[server] {
-		if shard_ == shard_id {
-			lb.server_shard_mapping[server] = append(lb.server_shard_mapping[server][:i], lb.server_shard_mapping[server][i+1:]...)
-			break
-		}
-	}
+	// remove shard from server
+	delete(lb.server_shard_mapping[server], shard_id)
 	// fit into hashmap
 	i := stringHash(server)
 	for j := 0; j < K; j++ {

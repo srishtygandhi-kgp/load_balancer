@@ -23,6 +23,12 @@ type student struct {
 	Stud_marks int
 }
 
+type MapT struct {
+	Shard_id  string
+	Server_id string
+	Primary   bool
+}
+
 type initPayload struct {
 	N       int
 	Shards  []shard
@@ -40,6 +46,17 @@ type readResponse struct {
 type writePayload struct {
 	Shard string    `json:"shard" binding:"required"`
 	Data  []student `json:"data" binding:"required"`
+}
+
+type updatePayload struct {
+	Shard   string  `json:"shard" binding:"required"`
+	Stud_id int     `json:"Stud_id" binding:"required"`
+	Data    student `json:"data" binding:"required"`
+}
+
+type delPayload struct {
+	Shard   string `json:"shard" binding:"required"`
+	Stud_id int    `json:"Stud_id" binding:"required"`
 }
 
 func max(a, b int) int {

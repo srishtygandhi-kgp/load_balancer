@@ -18,6 +18,11 @@ type shardMetaData struct {
 	Stud_id_high int
 	Mutex        *sync.Mutex
 }
+type MapT struct {
+	Shard_id  string
+	Server_id string
+	Primary   bool
+}
 
 type addPayload struct {
 	N          int
@@ -32,8 +37,7 @@ type student struct {
 }
 
 type configPayload struct {
-	Shards   []string                   `json:"shards" binding:"required"`
-	Map_data map[string]map[string]bool `json:"map_data" binding:"required"`
+	Shards []string `json:"shards" binding:"required"`
 }
 
 type initPayload struct {

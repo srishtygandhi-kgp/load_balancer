@@ -24,6 +24,17 @@ services:
     privileged: true
     networks:
       - net1
+  map_db:
+    image: mysql:8.0.36-debian
+    container_name: map_db
+    ports:
+      - ":3306"
+      - ":33060"
+    environment:
+      MYSQL_ROOT_PASSWORD: abc
+      MYSQL_DATABASE: map_db
+    networks:
+      - net1
 
 networks:
   net1:

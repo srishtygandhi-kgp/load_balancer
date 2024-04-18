@@ -13,3 +13,5 @@ curl -X POST -H "Content-Type: application/json" -d '{"data": [{"Stud_id":2255,"
 curl -X PUT -H "Content-Type: application/json" -d '{"Stud_id":2255, "data": {"Stud_id":2255,"Stud_name":"GHI","Stud_marks":30}}' http://localhost:5000/update
 
 curl -X DELETE -H "Content-Type: application/json" -d '{"Stud_id":2255}' http://localhost:5000/del
+
+curl -X GET -H "Content-Type: application/json" http://localhost:5000/read/Server0
