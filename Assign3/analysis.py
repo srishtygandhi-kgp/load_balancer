@@ -3,6 +3,7 @@ import requests
 import aiohttp
 import asyncio
 import time
+import subprocess
 
 
 performance = {"Write": {}, "Read": {}}
@@ -16,6 +17,7 @@ async def performRW(numOfShards, numOfServers, numOfReplicas):
     global performance, numOfRW
     # start the system in the background
     os.system("docker compose up -d")
+    time.sleep(30)
     # init the system
     shards = []
     for i in range(numOfShards):
@@ -95,7 +97,10 @@ async def performRW(numOfShards, numOfServers, numOfReplicas):
     # curl -X DELETE -H "Content-Type: application/json" -d '{"n" : 2, "servers" : ["Server4"]}' http://localhost:5000/rm
     payload = {"n":numOfServers, "servers":[]}
     response = requests.delete("http://localhost:5000/rm", json=payload)
-    os.system("docker compose down")
+    try:
+        subprocess.check_output("make stop", shell=True, stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError:
+        pass
 
 
 
