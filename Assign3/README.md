@@ -1,4 +1,4 @@
-# Assignment 2 | Distributed Database
+# Assignment 3 | Distributed Database w/ WAL, Sharding, Load Balancing
 
 Contributors for this project are:
 - 20CS30060 : [Yatindra Indoria](https://github.com/yatindra7)
